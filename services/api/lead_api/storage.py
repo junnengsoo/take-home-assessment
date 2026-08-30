@@ -72,5 +72,42 @@ class ResumeStorage:
         if response.status_code not in {200, 204}:
             raise RuntimeError(f"storage delete failed with status {response.status_code}")
 
+    async def download(self, settings: Settings, object_key: str) -> bytes:
+        if not settings.supabase_service_role_key:
+            raise ProblemError(
+                503,
+                "Storage configuration incomplete",
+                "The API is missing server-side Storage credentials.",
+                "storage_configuration_incomplete",
+            )
+
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(
+                (
+                    f"{str(settings.supabase_url).rstrip('/')}/storage/v1/object/"
+                    f"{settings.resume_bucket}/{object_key}"
+                ),
+                headers={
+                    "apikey": settings.supabase_service_role_key,
+                    "Authorization": f"Bearer {settings.supabase_service_role_key}",
+                },
+            )
+
+        if response.status_code == 404:
+            raise ProblemError(
+                404,
+                "Résumé unavailable",
+                "The résumé could not be found for this Lead.",
+                "resume_not_found",
+            )
+        if response.status_code != 200:
+            raise ProblemError(
+                502,
+                "Résumé unavailable",
+                "The résumé could not be retrieved. Please try again.",
+                "resume_unavailable",
+            )
+        return response.content
+
 
 resume_storage = ResumeStorage()

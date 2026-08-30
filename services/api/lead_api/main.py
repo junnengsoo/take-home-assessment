@@ -1,12 +1,21 @@
 from contextlib import asynccontextmanager
 from typing import Optional
+from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.requests import Request
+from fastapi.responses import StreamingResponse
 
 from lead_api.auth import AttorneyIdentity, current_attorney
 from lead_api.config import get_settings
 from lead_api.database import database
+from lead_api.lead_detail import (
+    lead_detail_payload,
+    parse_lead_id,
+    parse_resume_disposition,
+    safe_content_disposition,
+)
 from lead_api.lead_queue import (
     DEFAULT_PAGE_SIZE,
     attorney_payload,
@@ -21,6 +30,7 @@ from lead_api.lead_queue import (
 )
 from lead_api.leads import submit_lead
 from lead_api.problems import ProblemError, problem, problem_error_handler
+from lead_api.storage import resume_storage
 
 CURRENT_ATTORNEY = Depends(current_attorney)
 
@@ -113,6 +123,62 @@ def create_app() -> FastAPI:
             page_size=parsed_page_size,
         )
         return lead_queue_payload(rows, page_size=parsed_page_size, counts=counts)
+
+    @app.get("/api/v1/admin/leads/{lead_id}")
+    async def lead_detail(
+        lead_id: str,
+        _: AttorneyIdentity = CURRENT_ATTORNEY,
+    ) -> dict[str, object]:
+        parsed_lead_id = parse_lead_id(lead_id)
+        row = await database.fetch_lead_detail(parsed_lead_id)
+        if row is None:
+            raise ProblemError(
+                404,
+                "Lead not found",
+                "No Lead was found for the authenticated Attorney.",
+                "lead_not_found",
+            )
+        return lead_detail_payload(row)
+
+    @app.get("/api/v1/admin/leads/{lead_id}/resume")
+    async def lead_resume(
+        request: Request,
+        lead_id: str,
+        disposition: str = "attachment",
+        attorney: AttorneyIdentity = CURRENT_ATTORNEY,
+    ) -> StreamingResponse:
+        parsed_lead_id = parse_lead_id(lead_id)
+        parsed_disposition = parse_resume_disposition(disposition)
+        row = await database.fetch_lead_detail(parsed_lead_id)
+        if row is None:
+            raise ProblemError(
+                404,
+                "Lead not found",
+                "No Lead was found for the authenticated Attorney.",
+                "lead_not_found",
+            )
+
+        content = await resume_storage.download(get_settings(), row["storage_object_key"])
+        correlation_id = request.headers.get("x-request-id") or str(uuid4())
+        await database.append_resume_download_audit_event(
+            lead_id=parsed_lead_id,
+            actor_attorney_id=attorney.id,
+            correlation_id=correlation_id,
+        )
+
+        return StreamingResponse(
+            iter([content]),
+            media_type=row["content_type"],
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Disposition": safe_content_disposition(
+                    original_filename=row["original_filename"],
+                    requested_disposition=parsed_disposition,
+                    content_type=row["content_type"],
+                ),
+                "X-Request-ID": correlation_id,
+            },
+        )
 
     app.post("/api/v1/leads", status_code=201)(submit_lead)
 

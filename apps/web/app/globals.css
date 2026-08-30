@@ -469,6 +469,16 @@ input {
   overflow-wrap: anywhere;
 }
 
+.lead-name-link {
+  color: var(--pine);
+  text-decoration-color: rgba(18, 61, 53, 0.22);
+  text-underline-offset: 4px;
+}
+
+.lead-name-link:hover {
+  text-decoration-color: var(--pine);
+}
+
 .status-pill {
   display: inline-flex;
   align-items: center;
@@ -536,6 +546,132 @@ input {
   gap: 16px;
   margin-top: 16px;
   color: var(--muted);
+}
+
+.lead-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 18px;
+  align-items: start;
+}
+
+.detail-panel {
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 22px;
+  box-shadow: 0 18px 44px rgba(18, 61, 53, 0.08);
+}
+
+.primary-detail-panel {
+  display: grid;
+  gap: 22px;
+}
+
+.secondary-detail-panel {
+  display: grid;
+  gap: 26px;
+}
+
+.secondary-detail-panel h3,
+.resume-preview-heading h3 {
+  margin: 0;
+  color: var(--pine);
+}
+
+.secondary-detail-panel p {
+  margin: 8px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.detail-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+}
+
+.detail-list div {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbf8ee;
+  padding: 14px;
+}
+
+.detail-list dt {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.detail-list dd {
+  margin: 5px 0 0;
+  color: var(--pine);
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.resume-preview-card {
+  display: grid;
+  gap: 16px;
+}
+
+.resume-preview-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.resume-preview-heading span {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.resume-preview-frame {
+  width: 100%;
+  min-height: 640px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--mist);
+}
+
+.resume-preview-fallback {
+  min-height: 280px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed var(--sage);
+  border-radius: 8px;
+  background: var(--mist);
+  color: var(--muted);
+  padding: 28px;
+  text-align: center;
+}
+
+.status-history {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.status-history li {
+  display: grid;
+  gap: 7px;
+  padding-left: 14px;
+  border-left: 3px solid var(--line);
+}
+
+.status-history strong {
+  color: var(--pine);
+}
+
+.status-history time {
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .confirmation-page {
@@ -649,5 +785,20 @@ input {
   .lead-card-list {
     display: grid;
     gap: 12px;
+  }
+
+  .lead-detail-grid,
+  .detail-list,
+  .resume-preview-heading {
+    grid-template-columns: 1fr;
+  }
+
+  .lead-detail-grid,
+  .resume-preview-heading {
+    display: grid;
+  }
+
+  .resume-preview-frame {
+    min-height: 420px;
   }
 }

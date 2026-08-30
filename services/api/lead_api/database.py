@@ -156,6 +156,96 @@ class Database:
         async with self._pool.acquire() as connection:
             return await connection.fetch(query, *args)
 
+    async def fetch_lead_detail(self, lead_id: str) -> Optional[dict[str, object]]:
+        if self._pool is None and self._settings is not None:
+            await self.connect(self._settings)
+        if self._pool is None:
+            raise RuntimeError("database pool is not initialized")
+
+        async with self._pool.acquire() as connection:
+            lead = await connection.fetchrow(
+                """
+                select
+                  l.id::text as id,
+                  l.first_name,
+                  l.last_name,
+                  l.normalized_email::text as normalized_email,
+                  l.current_status::text as current_status,
+                  l.version,
+                  l.created_at,
+                  a.id::text as assigned_attorney_id,
+                  a.email::text as assigned_attorney_email,
+                  a.display_name as assigned_attorney_display_name,
+                  r.id::text as resume_id,
+                  r.storage_bucket,
+                  r.storage_object_key,
+                  r.original_filename,
+                  r.content_type,
+                  r.byte_size,
+                  r.created_at as resume_created_at
+                from app.leads l
+                join app.resume_metadata r on r.lead_id = l.id
+                left join app.attorneys a on a.id = l.assigned_attorney_id
+                where l.id = $1::uuid
+                """,
+                lead_id,
+            )
+            if lead is None:
+                return None
+
+            status_changes = await connection.fetch(
+                """
+                select
+                  sc.id::text as id,
+                  sc.status::text as status,
+                  sc.actor_type::text as actor_type,
+                  sc.actor_attorney_id::text as actor_attorney_id,
+                  a.email::text as actor_attorney_email,
+                  a.display_name as actor_attorney_display_name,
+                  sc.created_at
+                from app.lead_status_changes sc
+                left join app.attorneys a on a.id = sc.actor_attorney_id
+                where sc.lead_id = $1::uuid
+                order by sc.created_at asc, sc.id asc
+                """,
+                lead_id,
+            )
+            detail = dict(lead)
+            detail["status_changes"] = [dict(status_change) for status_change in status_changes]
+            return detail
+
+    async def append_resume_download_audit_event(
+        self, *, lead_id: str, actor_attorney_id: str, correlation_id: str
+    ) -> None:
+        if self._pool is None and self._settings is not None:
+            await self.connect(self._settings)
+        if self._pool is None:
+            raise RuntimeError("database pool is not initialized")
+
+        async with self._pool.acquire() as connection:
+            await connection.execute(
+                """
+                insert into app.lead_audit_events (
+                  lead_id,
+                  event_type,
+                  actor_type,
+                  payload
+                )
+                values (
+                  $1::uuid,
+                  'resume.downloaded',
+                  'ATTORNEY',
+                  jsonb_build_object(
+                    'actorAttorneyId', $2::text,
+                    'correlationId', $3::text
+                  )
+                )
+                """,
+                lead_id,
+                actor_attorney_id,
+                correlation_id,
+            )
+
     async def fetch_submission_attempt(self, attempt_key: str) -> Optional[asyncpg.Record]:
         if self._pool is None and self._settings is not None:
             await self.connect(self._settings)
