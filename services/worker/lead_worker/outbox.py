@@ -26,6 +26,7 @@ class QueuedNotification:
     recipient_email: str
     payload: dict[str, Any]
     attempt_count: int
+    lead_id: str | None = None
 
 
 class OutboxStore(Protocol):
@@ -94,6 +95,7 @@ class PostgresOutboxStore:
                 where notification.id = available.id
                 returning
                   notification.id::text as id,
+                  notification.lead_id::text as lead_id,
                   notification.kind::text as kind,
                   notification.recipient_email::text as recipient_email,
                   notification.payload,
@@ -110,6 +112,7 @@ class PostgresOutboxStore:
                 recipient_email=record["recipient_email"],
                 payload=parse_payload(record["payload"]),
                 attempt_count=record["attempt_count"],
+                lead_id=record["lead_id"],
             )
             for record in records
         ]
@@ -208,6 +211,7 @@ class OutboxWorker:
         return len(claimed)
 
     async def _deliver(self, notification: QueuedNotification) -> None:
+        log_fields = notification_log_fields(notification, self._provider.name)
         try:
             message = render_notification(notification)
             result = await self._provider.send(message)
@@ -223,7 +227,7 @@ class OutboxWorker:
             )
             logger.info(
                 "email_delivery_retry_or_failed",
-                extra={"notification_id": notification.id, "provider": self._provider.name},
+                extra=log_fields,
             )
             return
         except Exception as exc:
@@ -238,7 +242,7 @@ class OutboxWorker:
             )
             logger.info(
                 "email_delivery_retry_or_failed",
-                extra={"notification_id": notification.id, "provider": self._provider.name},
+                extra=log_fields,
             )
             return
 
@@ -249,7 +253,7 @@ class OutboxWorker:
         )
         logger.info(
             "email_delivery_sent",
-            extra={"notification_id": notification.id, "provider": self._provider.name},
+            extra=log_fields,
         )
 
 
@@ -315,6 +319,19 @@ def parse_payload(value: object) -> dict[str, Any]:
             return {}
         return dict(decoded) if isinstance(decoded, dict) else {}
     return {}
+
+
+def notification_log_fields(
+    notification: QueuedNotification, provider_name: str
+) -> dict[str, str | None]:
+    correlation_id = notification.payload.get("correlationId")
+    return {
+        "correlation_id": correlation_id if isinstance(correlation_id, str) else None,
+        "lead_id": notification.lead_id,
+        "notification_id": notification.id,
+        "notification_kind": notification.kind,
+        "provider": provider_name,
+    }
 
 
 def paragraphs_to_html(body: str) -> str:

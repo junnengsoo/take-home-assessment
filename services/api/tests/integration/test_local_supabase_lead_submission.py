@@ -471,6 +471,7 @@ def test_local_supabase_round_robin_assignment_and_notification_outbox() -> None
         "prospectEmail",
         "assignment",
         "submittedAt",
+        "correlationId",
     }
     assert internal["payload"]["prospectName"] == "Ada Lovelace"
     assert internal["payload"]["prospectEmail"] == "ada@example.com"
@@ -550,6 +551,7 @@ def test_local_supabase_no_attorney_uses_fallback_notification_recipient() -> No
             "prospectEmail",
             "assignment",
             "submittedAt",
+            "correlationId",
         }
         assert internal["payload"]["assignment"] == "Unassigned"
     finally:

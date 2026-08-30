@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 import httpx
-from fastapi import Header
+from fastapi import Header, Request
 
 from lead_api.config import Settings, get_settings
 from lead_api.database import database
@@ -75,6 +75,7 @@ def parse_bearer_token(authorization: Optional[str]) -> str:
 
 
 async def current_attorney(
+    request: Request,
     authorization: Optional[str] = Header(default=None, alias="Authorization"),
 ) -> AttorneyIdentity:
     settings = get_settings()
@@ -88,8 +89,10 @@ async def current_attorney(
             "The authenticated account does not have an Attorney profile.",
             "attorney_profile_missing",
         )
-    return AttorneyIdentity(
+    identity = AttorneyIdentity(
         id=attorney["id"],
         email=attorney["email"],
         display_name=attorney["display_name"],
     )
+    request.state.actor_attorney_id = identity.id
+    return identity

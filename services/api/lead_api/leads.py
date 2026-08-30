@@ -208,6 +208,8 @@ async def submit_lead(
     resume: Optional[UploadFile] = RESUME_FILE,
 ) -> dict[str, object]:
     settings = get_settings()
+    correlation_id = getattr(request.state, "correlation_id", None) or str(uuid.uuid4())
+    response.headers["X-Request-ID"] = correlation_id
     clean_first_name = normalize_name(first_name, "First name")
     clean_last_name = normalize_name(last_name, "Last name")
     normalized_email = normalize_email(email)
@@ -263,6 +265,7 @@ async def submit_lead(
             sha256_digest=validated_resume.sha256_digest,
             turnstile_verification_outcome=turnstile_outcome.value,
             fallback_intake_address=settings.fallback_intake_address,
+            correlation_id=correlation_id,
         )
     except SubmissionAttemptAlreadyExists as exc:
         await compensate_resume_upload(settings, stored_resume.object_key)
@@ -281,6 +284,14 @@ async def submit_lead(
             ) from exc
         raise
 
+    logger.info(
+        "lead_submission_accepted",
+        extra={
+            "correlation_id": correlation_id,
+            "lead_id": lead["lead_id"],
+            "turnstile_outcome": turnstile_outcome.value,
+        },
+    )
     return lead_confirmation(lead)
 
 

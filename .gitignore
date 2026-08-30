@@ -17,3 +17,5 @@ dist/
 build/
 coverage/
 .cache/
+apps/web/test-results/
+apps/web/playwright-report/

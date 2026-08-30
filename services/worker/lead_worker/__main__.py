@@ -5,14 +5,17 @@ import uuid
 
 import asyncpg
 from lead_api.config import get_settings
+from lead_api.observability import configure_logging
 
 from lead_worker.outbox import OutboxWorker, PostgresOutboxStore, run_forever
 from lead_worker.providers import provider_from_settings
 
+logger = logging.getLogger(__name__)
+
 
 async def run() -> None:
     settings = get_settings()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s worker %(message)s")
+    configure_logging(service="worker", environment=settings.app_env, force=True)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -33,7 +36,7 @@ async def run() -> None:
         max_retry_seconds=settings.email_worker_max_retry_seconds,
     )
     worker_id = str(uuid.uuid4())
-    logging.info("started", extra={"worker_id": worker_id, "provider": provider.name})
+    logger.info("worker_started", extra={"worker_id": worker_id, "provider": provider.name})
     try:
         await run_forever(
             worker=worker,
@@ -43,7 +46,7 @@ async def run() -> None:
         )
     finally:
         await pool.close()
-        logging.info("stopped")
+        logger.info("worker_stopped", extra={"worker_id": worker_id})
 
 
 if __name__ == "__main__":

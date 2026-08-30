@@ -365,6 +365,7 @@ class Database:
         sha256_digest: str,
         turnstile_verification_outcome: str,
         fallback_intake_address: str,
+        correlation_id: str,
     ) -> asyncpg.Record:
         if self._pool is None and self._settings is not None:
             await self.connect(self._settings)
@@ -464,13 +465,15 @@ class Database:
                           'SYSTEM',
                           jsonb_build_object(
                             'submissionAttemptKey', $2::text,
-                            'resumeSha256Digest', $3::text
+                            'resumeSha256Digest', $3::text,
+                            'correlationId', $4::text
                           )
                         )
                         """,
                         lead_id,
                         attempt_key,
                         sha256_digest,
+                        correlation_id,
                     )
                     await connection.execute(
                         """
@@ -499,7 +502,8 @@ class Database:
                           $2,
                           jsonb_build_object(
                             'prospectFirstName', $3::text,
-                            'submittedAt', $4::timestamptz
+                            'submittedAt', $4::timestamptz,
+                            'correlationId', $5::text
                           )
                         )
                         """,
@@ -507,6 +511,7 @@ class Database:
                         normalized_email,
                         first_name,
                         lead["created_at"],
+                        correlation_id,
                     )
                     await connection.execute(
                         """
@@ -524,7 +529,8 @@ class Database:
                             'prospectName', $3::text,
                             'prospectEmail', $4::text,
                             'assignment', $5::text,
-                            'submittedAt', $6::timestamptz
+                            'submittedAt', $6::timestamptz,
+                            'correlationId', $7::text
                           )
                         )
                         """,
@@ -534,6 +540,7 @@ class Database:
                         normalized_email,
                         assignment_label,
                         lead["created_at"],
+                        correlation_id,
                     )
             except asyncpg.UniqueViolationError as exc:
                 existing = await self._fetch_submission_attempt(connection, attempt_key)
