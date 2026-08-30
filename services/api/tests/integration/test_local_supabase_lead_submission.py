@@ -295,6 +295,53 @@ async def fetch_assigned_attorney(attempt_key: str) -> Optional[str]:
         await connection.close()
 
 
+async def fetch_status_evidence(lead_id: str) -> dict[str, object]:
+    connection = await asyncpg.connect(admin_database_url())
+    try:
+        lead = await connection.fetchrow(
+            """
+            select
+              current_status::text as current_status,
+              version,
+              assigned_attorney_id::text as assigned_attorney_id
+            from app.leads
+            where id = $1::uuid
+            """,
+            lead_id,
+        )
+        status_changes = await connection.fetch(
+            """
+            select
+              status::text as status,
+              actor_type::text as actor_type,
+              actor_attorney_id::text as actor_attorney_id,
+              created_at
+            from app.lead_status_changes
+            where lead_id = $1::uuid
+            order by created_at, id
+            """,
+            lead_id,
+        )
+        audit_events = await connection.fetch(
+            """
+            select event_type, actor_type::text as actor_type, payload, created_at
+            from app.lead_audit_events
+            where lead_id = $1::uuid and event_type = 'lead.status_changed'
+            order by created_at, id
+            """,
+            lead_id,
+        )
+        return {
+            "lead": dict(lead),
+            "status_changes": [dict(row) for row in status_changes],
+            "audit_events": [
+                {**dict(row), "payload": json.loads(row["payload"])} for row in audit_events
+            ],
+        }
+    finally:
+        await connection.close()
+
+
 def public_storage_response(object_key: str) -> int:
     settings = get_settings()
     response = httpx.get(
@@ -617,6 +664,140 @@ def test_local_supabase_attorney_queue_scopes_filters_search_and_cursor() -> Non
     ]
     assert attorneys.status_code == 200
     assert set(attorneys.json()[0]) == {"id", "email", "displayName"}
+
+
+def test_local_supabase_status_transitions_preserve_assignment_and_append_history() -> None:
+    if not get_settings().supabase_service_role_key:
+        pytest.skip("set SUPABASE_SERVICE_ROLE_KEY to the local service role key")
+
+    assigned_attorney = "00000000-0000-4000-8000-000000000031"
+    acting_attorney = "11111111-1111-4111-8111-111111111111"
+    asyncio.run(
+        prepare_assignment_attorneys(
+            [
+                (assigned_attorney, "assigned-status@example.test", "Assigned Status Attorney"),
+                (acting_attorney, "attorney.local@example.test", "Local Attorney"),
+            ]
+        )
+    )
+    attempt_key = f"local-status-{uuid4()}"
+
+    with TestClient(app) as client:
+        submitted = client.post(
+            "/api/v1/leads",
+            data=form_data(attempt_key),
+            files=resume_file(pdf_bytes(attempt_key)),
+        )
+
+    assert submitted.status_code == 201
+    lead_id = submitted.json()["leadId"]
+    assert asyncio.run(fetch_assigned_attorney(attempt_key)) == assigned_attorney
+    headers = {"Authorization": f"Bearer {sign_in_attorney()}"}
+
+    with TestClient(app) as client:
+        reached_out = client.patch(
+            f"/api/v1/admin/leads/{lead_id}/status",
+            json={"status": "REACHED_OUT", "version": 1},
+            headers={**headers, "X-Request-ID": "integration-reached-out"},
+        )
+        repeated = client.patch(
+            f"/api/v1/admin/leads/{lead_id}/status",
+            json={"status": "REACHED_OUT", "version": 2},
+            headers=headers,
+        )
+        stale = client.patch(
+            f"/api/v1/admin/leads/{lead_id}/status",
+            json={"status": "PENDING", "version": 1},
+            headers=headers,
+        )
+        reversed_status = client.patch(
+            f"/api/v1/admin/leads/{lead_id}/status",
+            json={"status": "PENDING", "version": 2},
+            headers={**headers, "X-Request-ID": "integration-reversed"},
+        )
+        refreshed = client.get(f"/api/v1/admin/leads/{lead_id}", headers=headers)
+
+    assert reached_out.status_code == 200
+    assert repeated.status_code == 200
+    assert repeated.json() == reached_out.json()
+    assert stale.status_code == 409
+    assert stale.json()["code"] == "lead_version_conflict"
+    assert reversed_status.status_code == 200
+    assert refreshed.json() == reversed_status.json()
+    assert reversed_status.json()["status"] == "PENDING"
+    assert reversed_status.json()["version"] == 3
+    assert reversed_status.json()["assignedAttorney"]["id"] == assigned_attorney
+    assert [row["status"] for row in reversed_status.json()["statusChanges"]] == [
+        "PENDING",
+        "REACHED_OUT",
+        "PENDING",
+    ]
+
+    evidence = asyncio.run(fetch_status_evidence(lead_id))
+    assert evidence["lead"] == {
+        "current_status": "PENDING",
+        "version": 3,
+        "assigned_attorney_id": assigned_attorney,
+    }
+    assert [row["actor_attorney_id"] for row in evidence["status_changes"][1:]] == [
+        acting_attorney,
+        acting_attorney,
+    ]
+    assert all(row["created_at"] is not None for row in evidence["status_changes"])
+    assert [row["payload"]["correlationId"] for row in evidence["audit_events"]] == [
+        "integration-reached-out",
+        "integration-reversed",
+    ]
+    assert all(row["actor_type"] == "ATTORNEY" for row in evidence["audit_events"])
+
+
+def test_local_supabase_concurrent_status_mutations_expose_one_conflict() -> None:
+    if not get_settings().supabase_service_role_key:
+        pytest.skip("set SUPABASE_SERVICE_ROLE_KEY to the local service role key")
+
+    asyncio.run(ensure_seeded_attorney())
+    attempt_key = f"local-concurrent-status-{uuid4()}"
+    with TestClient(app) as client:
+        submitted = client.post(
+            "/api/v1/leads",
+            data=form_data(attempt_key),
+            files=resume_file(pdf_bytes(attempt_key)),
+        )
+
+    assert submitted.status_code == 201
+    lead_id = submitted.json()["leadId"]
+    headers = {"Authorization": f"Bearer {sign_in_attorney()}"}
+
+    async def mutate_concurrently():
+        await database.connect(get_settings())
+        try:
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://testserver"
+            ) as client:
+                return await asyncio.gather(
+                    client.patch(
+                        f"/api/v1/admin/leads/{lead_id}/status",
+                        json={"status": "REACHED_OUT", "version": 1},
+                        headers=headers,
+                    ),
+                    client.patch(
+                        f"/api/v1/admin/leads/{lead_id}/status",
+                        json={"status": "REACHED_OUT", "version": 1},
+                        headers=headers,
+                    ),
+                )
+        finally:
+            await database.close()
+
+    responses = asyncio.run(mutate_concurrently())
+
+    assert sorted(response.status_code for response in responses) == [200, 409]
+    evidence = asyncio.run(fetch_status_evidence(lead_id))
+    assert evidence["lead"]["current_status"] == "REACHED_OUT"
+    assert evidence["lead"]["version"] == 2
+    assert len(evidence["status_changes"]) == 2
+    assert len(evidence["audit_events"]) == 1
 
 
 def test_local_supabase_outbox_failure_rolls_back_and_compensates_resume(

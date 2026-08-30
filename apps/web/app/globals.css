@@ -584,6 +584,30 @@ input {
   overflow-wrap: anywhere;
 }
 
+.status-action {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--apple);
+}
+
+.status-action .eyebrow,
+.status-action p,
+.status-action-message {
+  margin: 0;
+}
+
+.status-action .secondary-button {
+  width: 100%;
+}
+
+.status-action-message {
+  min-height: 0;
+}
+
 .detail-list {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

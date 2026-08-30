@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 
 from lead_api.auth import AttorneyIdentity, current_attorney
 from lead_api.config import get_settings
-from lead_api.database import database
+from lead_api.database import LeadVersionConflict, database
 from lead_api.lead_detail import (
     lead_detail_payload,
     parse_lead_id,
@@ -28,6 +28,7 @@ from lead_api.lead_queue import (
     parse_scope,
     parse_status,
 )
+from lead_api.lead_status import LeadStatusMutation
 from lead_api.leads import submit_lead
 from lead_api.problems import ProblemError, problem, problem_error_handler
 from lead_api.storage import resume_storage
@@ -54,7 +55,7 @@ def create_app() -> FastAPI:
         allow_origins=settings.frontend_origins,
         allow_credentials=False,
         allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type"],
+        allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
     )
 
     @app.get("/health/live")
@@ -131,6 +132,39 @@ def create_app() -> FastAPI:
     ) -> dict[str, object]:
         parsed_lead_id = parse_lead_id(lead_id)
         row = await database.fetch_lead_detail(parsed_lead_id)
+        if row is None:
+            raise ProblemError(
+                404,
+                "Lead not found",
+                "No Lead was found for the authenticated Attorney.",
+                "lead_not_found",
+            )
+        return lead_detail_payload(row)
+
+    @app.patch("/api/v1/admin/leads/{lead_id}/status")
+    async def update_lead_status(
+        request: Request,
+        lead_id: str,
+        mutation: LeadStatusMutation,
+        attorney: AttorneyIdentity = CURRENT_ATTORNEY,
+    ) -> dict[str, object]:
+        parsed_lead_id = parse_lead_id(lead_id)
+        correlation_id = request.headers.get("x-request-id") or str(uuid4())
+        try:
+            row = await database.update_lead_status(
+                lead_id=parsed_lead_id,
+                expected_version=mutation.version,
+                desired_status=mutation.status,
+                actor_attorney_id=attorney.id,
+                correlation_id=correlation_id,
+            )
+        except LeadVersionConflict as exc:
+            raise ProblemError(
+                409,
+                "Lead changed",
+                "This Lead changed after it was loaded. Refresh and try again.",
+                "lead_version_conflict",
+            ) from exc
         if row is None:
             raise ProblemError(
                 404,
