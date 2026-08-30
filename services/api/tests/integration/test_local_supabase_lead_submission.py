@@ -317,6 +317,22 @@ def service_storage_response(object_key: str) -> int:
     return response.status_code
 
 
+def sign_in_attorney(email: str = "attorney.local@example.test") -> str:
+    supabase_url = str(get_settings().supabase_url).rstrip("/")
+    anon_key = get_settings().supabase_anon_key
+    auth_response = httpx.post(
+        f"{supabase_url}/auth/v1/token?grant_type=password",
+        headers={"apikey": anon_key, "Content-Type": "application/json"},
+        json={
+            "email": email,
+            "password": "LocalAttorney123!",
+        },
+        timeout=10,
+    )
+    assert auth_response.status_code == 200
+    return auth_response.json()["access_token"]
+
+
 @pytest.fixture(autouse=True)
 def pass_turnstile(monkeypatch: pytest.MonkeyPatch) -> None:
     async def verify(*args, **kwargs):
@@ -491,6 +507,116 @@ def test_local_supabase_no_attorney_uses_fallback_notification_recipient() -> No
         assert internal["payload"]["assignment"] == "Unassigned"
     finally:
         asyncio.run(ensure_seeded_attorney())
+
+
+def test_local_supabase_attorney_queue_scopes_filters_search_and_cursor() -> None:
+    if not get_settings().supabase_service_role_key:
+        pytest.skip("set SUPABASE_SERVICE_ROLE_KEY to the local service role key")
+
+    first_attorney = "11111111-1111-4111-8111-111111111111"
+    second_attorney = "00000000-0000-4000-8000-000000000022"
+    asyncio.run(
+        prepare_assignment_attorneys(
+            [
+                (first_attorney, "attorney.local@example.test", "Local Attorney"),
+                (second_attorney, "coverage@example.test", "Coverage Attorney"),
+            ]
+        )
+    )
+    created_at = datetime(2026, 8, 30, 16, 0, tzinfo=timezone.utc)
+    lead_ids = [
+        "10000000-0000-4000-8000-000000000001",
+        "10000000-0000-4000-8000-000000000002",
+        "10000000-0000-4000-8000-000000000003",
+        "10000000-0000-4000-8000-000000000004",
+    ]
+    asyncio.run(
+        execute_admin(
+            """
+            insert into app.leads (
+              id,
+              first_name,
+              last_name,
+              normalized_email,
+              current_status,
+              assigned_attorney_id,
+              created_at
+            )
+            values
+              ($1::uuid, 'Ada', 'Lovelace', 'ada@example.com', 'PENDING', $5::uuid, $7),
+              ($2::uuid, 'Ada', 'Byron', 'ada@example.com', 'REACHED_OUT', $6::uuid, $7),
+              ($3::uuid, 'Grace', 'Hopper', 'grace@example.com', 'PENDING', null, $7),
+              ($4::uuid, 'Katherine', 'Johnson', 'katherine@example.com', 'PENDING', $5::uuid, $7)
+            """,
+            *lead_ids,
+            first_attorney,
+            second_attorney,
+            created_at,
+        )
+    )
+    token = sign_in_attorney()
+    headers = {"Authorization": f"Bearer {token}"}
+
+    with TestClient(app) as client:
+        my_leads = client.get("/api/v1/admin/leads", headers=headers)
+        all_first_page = client.get(
+            "/api/v1/admin/leads",
+            params={"scope": "all", "pageSize": "2"},
+            headers=headers,
+        )
+        all_second_page = client.get(
+            "/api/v1/admin/leads",
+            params={
+                "scope": "all",
+                "pageSize": "2",
+                "cursor": all_first_page.json()["nextCursor"],
+            },
+            headers=headers,
+        )
+        reached_out = client.get(
+            "/api/v1/admin/leads",
+            params={"scope": "all", "status": "REACHED_OUT", "assignment": second_attorney},
+            headers=headers,
+        )
+        unassigned = client.get(
+            "/api/v1/admin/leads",
+            params={"scope": "all", "assignment": "unassigned"},
+            headers=headers,
+        )
+        email_search = client.get(
+            "/api/v1/admin/leads",
+            params={"scope": "all", "q": " ada@EXAMPLE.com "},
+            headers=headers,
+        )
+        attorneys = client.get("/api/v1/admin/attorneys", headers=headers)
+
+    assert my_leads.status_code == 200
+    assert my_leads.json()["counts"] == {"my": 2, "unassigned": 1, "all": 4}
+    assert [lead["id"] for lead in my_leads.json()["leads"]] == [
+        "10000000-0000-4000-8000-000000000004",
+        "10000000-0000-4000-8000-000000000001",
+    ]
+    assert all_first_page.status_code == 200
+    assert all_second_page.status_code == 200
+    first_ids = [lead["id"] for lead in all_first_page.json()["leads"]]
+    second_ids = [lead["id"] for lead in all_second_page.json()["leads"]]
+    assert first_ids == [
+        "10000000-0000-4000-8000-000000000004",
+        "10000000-0000-4000-8000-000000000003",
+    ]
+    assert second_ids == [
+        "10000000-0000-4000-8000-000000000002",
+        "10000000-0000-4000-8000-000000000001",
+    ]
+    assert not set(first_ids).intersection(second_ids)
+    assert reached_out.json()["leads"][0]["id"] == "10000000-0000-4000-8000-000000000002"
+    assert unassigned.json()["leads"][0]["assignedAttorney"] is None
+    assert [lead["id"] for lead in email_search.json()["leads"]] == [
+        "10000000-0000-4000-8000-000000000002",
+        "10000000-0000-4000-8000-000000000001",
+    ]
+    assert attorneys.status_code == 200
+    assert set(attorneys.json()[0]) == {"id", "email", "displayName"}
 
 
 def test_local_supabase_outbox_failure_rolls_back_and_compensates_resume(
