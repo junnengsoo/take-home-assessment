@@ -331,9 +331,11 @@ function WorkspaceQueue() {
                   {queue.leads.map((lead) => (
                     <tr key={lead.id}>
                       <td>
-                        <strong>
-                          {lead.firstName} {lead.lastName}
-                        </strong>
+                        <Link className="lead-name-link" href={`/workspace/leads/${lead.id}`}>
+                          <strong>
+                            {lead.firstName} {lead.lastName}
+                          </strong>
+                        </Link>
                         <span>{lead.email}</span>
                       </td>
                       <td>
@@ -353,9 +355,11 @@ function WorkspaceQueue() {
               {queue.leads.map((lead) => (
                 <article className="lead-card" key={lead.id}>
                   <div>
-                    <strong>
-                      {lead.firstName} {lead.lastName}
-                    </strong>
+                    <Link className="lead-name-link" href={`/workspace/leads/${lead.id}`}>
+                      <strong>
+                        {lead.firstName} {lead.lastName}
+                      </strong>
+                    </Link>
                     <span>{lead.email}</span>
                   </div>
                   <span className={`status-pill ${lead.status.toLowerCase()}`}>
