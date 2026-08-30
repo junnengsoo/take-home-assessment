@@ -7,6 +7,21 @@ Supabase provides infrastructure primitives, FastAPI owns business rules and
 authorization, Next.js owns the browser experience, and a Python worker delivers
 durable email notifications.
 
+## Key design decisions and rationale
+
+| Decision | Why this choice | Trade-off |
+| --- | --- | --- |
+| Use Supabase for local infrastructure | Supabase was used for this take-home so we did not have to build authentication, database setup, private file storage, Studio tooling, and local email capture from scratch. This let the implementation focus on Lead intake and Attorney workflow behavior instead of infrastructure plumbing. | The app is somewhat coupled to Supabase primitives, especially Auth and Storage. |
+| Store résumé bytes in private Storage and stream them through FastAPI | Résumés are sensitive, so they should not be exposed through public URLs. Streaming them through FastAPI lets the app authorize access and record audit events. This is also simple enough for the assessment because résumé files are capped at 5 MiB. | FastAPI currently buffers the résumé before returning it. That is acceptable for the file-size limit here, but larger production files would benefit from true chunked proxy streaming. |
+| Use a PostgreSQL email outbox | Lead creation should not fail or lose state because SMTP or an email provider is temporarily unavailable. Writing outbox rows in the Lead transaction makes notification intent durable. | Email delivery is at-least-once, not exactly-once, and requires a worker process. |
+| Assign Leads by round-robin, but allow all Attorneys to view and act | Assignment is accountability, not authorization. This distributes work fairly while still allowing coverage if another Attorney helps. | The model does not support capacity, specialty, schedule, or reassignment workflows in this scope. |
+| Represent outreach as append-only Status Changes plus a materialized current status | Attorneys need a simple current state, but the company also needs history showing who changed what and when. Reversal appends a new fact instead of rewriting history. | Reads and writes maintain both history and a materialized field, so mutations must be transactional. |
+| Require Lead versions on Status Changes | Two Attorneys can have the same Lead open. Optimistic versioning prevents silent lost updates and makes stale tabs visibly refresh. | The UI must handle `409 Conflict` instead of blindly retrying. |
+| Use Submission Attempt idempotency plus request fingerprints | Browser/network retries should not create duplicate Leads, but a later deliberate submission with the same email should still create a distinct Lead. | The server must compute and store a defensive fingerprint for each attempt. |
+| Layer Turnstile, rate limiting, honeypot, and file validation | No single abuse control is enough. Turnstile helps against bots, rate limiting protects direct API traffic, the honeypot catches simple automation, and file validation protects Storage. | Local Turnstile test keys need special demo documentation because their dummy verification payload is not identical to production. |
+| Use lightweight JSON logs plus audit rows | The take-home needs production-shaped observability without adding a hosted logging vendor. Correlation IDs make one request flow searchable while redaction tests protect private data. | This is not full distributed tracing; a hosted system would ship logs to a managed sink with retention and alerting. |
+| Run app processes directly on the host | For a six-hour assessment, `pnpm dev` plus Supabase CLI is easier for reviewers than Docker Compose or multiple deployment artifacts. | Hosted-production orchestration is documented rather than implemented. |
+
 ## Boundaries
 
 - **Next.js web app** renders the public Lead form, confirmation page, Attorney
