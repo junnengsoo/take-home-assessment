@@ -1,5 +1,8 @@
 import asyncio
+import json
 import os
+from datetime import datetime, timezone
+from typing import Optional
 from uuid import uuid4
 
 import asyncpg
@@ -8,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 from lead_api.abuse import TurnstileOutcome
 from lead_api.config import get_settings
-from lead_api.database import LeadPersistenceError
+from lead_api.database import LeadPersistenceError, database
 from lead_api.main import app
 
 pytestmark = pytest.mark.skipif(
@@ -36,6 +39,172 @@ def resume_file(content: bytes = pdf_bytes()):
     return {"resume": ("private-name.pdf", content, "application/pdf")}
 
 
+def admin_database_url() -> str:
+    return os.getenv(
+        "SUPABASE_TEST_ADMIN_DATABASE_URL",
+        "postgresql://postgres:postgres@127.0.0.1:54322/postgres",
+    )
+
+
+async def execute_admin(sql: str, *args) -> None:
+    connection = await asyncpg.connect(admin_database_url())
+    try:
+        await connection.execute(sql, *args)
+    finally:
+        await connection.close()
+
+
+async def fetchval_admin(sql: str, *args):
+    connection = await asyncpg.connect(admin_database_url())
+    try:
+        return await connection.fetchval(sql, *args)
+    finally:
+        await connection.close()
+
+
+async def reset_application_records() -> None:
+    await execute_admin(
+        """
+        truncate
+          app.notification_outbox,
+          app.submission_attempts,
+          app.lead_audit_events,
+          app.lead_status_changes,
+          app.resume_metadata,
+          app.leads,
+          app.public_lead_rate_limits
+        restart identity
+        """
+    )
+
+
+async def create_attorney(
+    *,
+    attorney_id: str,
+    email: str,
+    display_name: str,
+    created_at: datetime = datetime(2026, 8, 30, tzinfo=timezone.utc),
+    last_assigned_at: Optional[datetime] = None,
+) -> None:
+    await execute_admin(
+        """
+        insert into auth.users (
+          instance_id,
+          id,
+          aud,
+          role,
+          email,
+          encrypted_password,
+          email_confirmed_at,
+          raw_app_meta_data,
+          raw_user_meta_data,
+          created_at,
+          updated_at,
+          confirmation_token,
+          recovery_token,
+          email_change_token_new,
+          email_change
+        )
+        values (
+          '00000000-0000-0000-0000-000000000000',
+          $1::uuid,
+          'authenticated',
+          'authenticated',
+          $2,
+          crypt('LocalAttorney123!', extensions.gen_salt('bf')),
+          now(),
+          '{"provider": "email", "providers": ["email"]}'::jsonb,
+          jsonb_build_object('display_name', $3::text),
+          $4::timestamptz,
+          now(),
+          '',
+          '',
+          '',
+          ''
+        )
+        on conflict (id) do update
+          set email = excluded.email,
+              raw_user_meta_data = excluded.raw_user_meta_data,
+              updated_at = now()
+        """,
+        attorney_id,
+        email,
+        display_name,
+        created_at,
+    )
+    await execute_admin(
+        """
+        insert into auth.identities (
+          id,
+          user_id,
+          provider_id,
+          identity_data,
+          provider,
+          last_sign_in_at,
+          created_at,
+          updated_at
+        )
+        values (
+          $1,
+          $1::uuid,
+          $1,
+          jsonb_build_object('sub', $1::text, 'email', $2::text),
+          'email',
+          now(),
+          now(),
+          now()
+        )
+        on conflict (provider, provider_id) do update
+          set identity_data = excluded.identity_data,
+              updated_at = now()
+        """,
+        attorney_id,
+        email,
+    )
+    await execute_admin(
+        """
+        update app.attorneys
+        set
+          email = $2,
+          display_name = $3,
+          created_at = $4::timestamptz,
+          last_assigned_at = $5::timestamptz
+        where id = $1::uuid
+        """,
+        attorney_id,
+        email,
+        display_name,
+        created_at,
+        last_assigned_at,
+    )
+
+
+async def ensure_seeded_attorney() -> None:
+    await create_attorney(
+        attorney_id="11111111-1111-4111-8111-111111111111",
+        email="attorney.local@example.test",
+        display_name="Local Attorney",
+    )
+
+
+async def remove_all_attorneys() -> None:
+    await reset_application_records()
+    await execute_admin("delete from auth.identities")
+    await execute_admin("delete from auth.users")
+
+
+async def prepare_assignment_attorneys(attorneys: list[tuple[str, str, str]]) -> None:
+    await reset_application_records()
+    await execute_admin("update app.attorneys set last_assigned_at = now() + interval '1 day'")
+    for attorney_id, email, display_name in attorneys:
+        await create_attorney(
+            attorney_id=attorney_id,
+            email=email,
+            display_name=display_name,
+            last_assigned_at=None,
+        )
+
+
 async def fetch_submission(attempt_key: str):
     settings = get_settings()
     connection = await asyncpg.connect(settings.database_url)
@@ -48,6 +217,7 @@ async def fetch_submission(attempt_key: str):
               l.last_name,
               l.normalized_email::text as normalized_email,
               l.version,
+              l.assigned_attorney_id::text as assigned_attorney_id,
               r.original_filename,
               r.storage_bucket,
               r.storage_object_key,
@@ -71,6 +241,53 @@ async def fetch_submission(attempt_key: str):
             from app.submission_attempts sa
             join app.leads l on l.id = sa.lead_id
             join app.resume_metadata r on r.lead_id = l.id
+            where sa.attempt_key = $1
+            """,
+            attempt_key,
+        )
+    finally:
+        await connection.close()
+
+
+async def fetch_outbox(lead_id: str):
+    settings = get_settings()
+    connection = await asyncpg.connect(settings.database_url)
+    try:
+        rows = await connection.fetch(
+            """
+            select
+              id::text as id,
+              notification_type::text as notification_type,
+              recipient_email::text as recipient_email,
+              recipient_attorney_id::text as recipient_attorney_id,
+              payload::text as payload,
+              status
+            from app.notification_outbox
+            where lead_id = $1::uuid
+            order by notification_type
+            """,
+            lead_id,
+        )
+        return [
+            {
+                **dict(row),
+                "payload": json.loads(row["payload"]),
+            }
+            for row in rows
+        ]
+    finally:
+        await connection.close()
+
+
+async def fetch_assigned_attorney(attempt_key: str) -> Optional[str]:
+    settings = get_settings()
+    connection = await asyncpg.connect(settings.database_url)
+    try:
+        return await connection.fetchval(
+            """
+            select l.assigned_attorney_id::text
+            from app.submission_attempts sa
+            join app.leads l on l.id = sa.lead_id
             where sa.attempt_key = $1
             """,
             attempt_key,
@@ -130,6 +347,7 @@ def test_local_supabase_lead_submission_persists_private_resume() -> None:
     assert stored["last_name"] == "Lovelace"
     assert stored["normalized_email"] == "ada@example.com"
     assert stored["version"] == 1
+    assert stored["assigned_attorney_id"] is not None
     assert stored["original_filename"] == "private-name.pdf"
     assert stored["storage_bucket"] == "resumes"
     assert stored["storage_object_key"] != "private-name.pdf"
@@ -141,6 +359,197 @@ def test_local_supabase_lead_submission_persists_private_resume() -> None:
     assert stored["creation_audit_events"] == 1
     assert public_storage_response(stored["storage_object_key"]) != 200
     assert service_storage_response(stored["storage_object_key"]) == 200
+
+
+def test_local_supabase_round_robin_assignment_and_notification_outbox() -> None:
+    if not get_settings().supabase_service_role_key:
+        pytest.skip("set SUPABASE_SERVICE_ROLE_KEY to the local service role key")
+
+    first_attorney = "00000000-0000-4000-8000-000000000001"
+    second_attorney = "00000000-0000-4000-8000-000000000002"
+    asyncio.run(
+        prepare_assignment_attorneys(
+            [
+                (second_attorney, "zeta.attorney@example.test", "Zeta Attorney"),
+                (first_attorney, "alpha.attorney@example.test", "Alpha Attorney"),
+            ]
+        )
+    )
+    attempts = [f"local-assignment-{uuid4()}" for _ in range(3)]
+
+    with TestClient(app) as client:
+        responses = [
+            client.post(
+                "/api/v1/leads",
+                data=form_data(attempt, "ADA@Example.COM"),
+                files=resume_file(pdf_bytes(attempt)),
+            )
+            for attempt in attempts
+        ]
+
+    assert [response.status_code for response in responses] == [201, 201, 201]
+    assigned = [asyncio.run(fetch_assigned_attorney(attempt)) for attempt in attempts]
+    assert assigned == [first_attorney, second_attorney, first_attorney]
+
+    stored = asyncio.run(fetch_submission(attempts[0]))
+    outbox = asyncio.run(fetch_outbox(stored["lead_id"]))
+    assert len(outbox) == 2
+    assert len({row["id"] for row in outbox}) == 2
+    assert {row["notification_type"] for row in outbox} == {
+        "PROSPECT_CONFIRMATION",
+        "INTERNAL_LEAD_CREATED",
+    }
+
+    prospect = next(row for row in outbox if row["notification_type"] == "PROSPECT_CONFIRMATION")
+    internal = next(row for row in outbox if row["notification_type"] == "INTERNAL_LEAD_CREATED")
+    assert prospect["recipient_email"] == "ada@example.com"
+    assert prospect["recipient_attorney_id"] is None
+    assert internal["recipient_email"] == "alpha.attorney@example.test"
+    assert internal["recipient_attorney_id"] == first_attorney
+    assert set(internal["payload"]) == {"prospectName", "prospectEmail", "submittedAt"}
+    assert internal["payload"]["prospectName"] == "Ada Lovelace"
+    assert internal["payload"]["prospectEmail"] == "ada@example.com"
+    serialized_outbox = json.dumps(outbox)
+    assert "private-name.pdf" not in serialized_outbox
+    assert "resumeSha256Digest" not in serialized_outbox
+    assert "storage_object_key" not in serialized_outbox
+
+
+def test_local_supabase_concurrent_submissions_do_not_race_assignment() -> None:
+    if not get_settings().supabase_service_role_key:
+        pytest.skip("set SUPABASE_SERVICE_ROLE_KEY to the local service role key")
+
+    first_attorney = "00000000-0000-4000-8000-000000000011"
+    second_attorney = "00000000-0000-4000-8000-000000000012"
+    asyncio.run(
+        prepare_assignment_attorneys(
+            [
+                (first_attorney, "concurrent-a@example.test", "Concurrent A"),
+                (second_attorney, "concurrent-b@example.test", "Concurrent B"),
+            ]
+        )
+    )
+    attempts = [f"local-concurrent-{uuid4()}" for _ in range(2)]
+
+    async def submit_concurrently():
+        await database.connect(get_settings())
+        try:
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                return await asyncio.gather(
+                    *[
+                        client.post(
+                            "/api/v1/leads",
+                            data=form_data(attempt),
+                            files=resume_file(pdf_bytes(attempt)),
+                        )
+                        for attempt in attempts
+                    ]
+                )
+        finally:
+            await database.close()
+
+    responses = asyncio.run(submit_concurrently())
+
+    assert sorted(response.status_code for response in responses) == [201, 201]
+    assigned = [asyncio.run(fetch_assigned_attorney(attempt)) for attempt in attempts]
+    assert set(assigned) == {first_attorney, second_attorney}
+
+
+def test_local_supabase_no_attorney_uses_fallback_notification_recipient() -> None:
+    if not get_settings().supabase_service_role_key:
+        pytest.skip("set SUPABASE_SERVICE_ROLE_KEY to the local service role key")
+
+    attempt_key = f"local-no-attorney-{uuid4()}"
+    asyncio.run(remove_all_attorneys())
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/leads",
+                data=form_data(attempt_key),
+                files=resume_file(),
+            )
+
+        assert response.status_code == 201
+        stored = asyncio.run(fetch_submission(attempt_key))
+        assert stored["assigned_attorney_id"] is None
+        outbox = asyncio.run(fetch_outbox(stored["lead_id"]))
+        internal = next(
+            row for row in outbox if row["notification_type"] == "INTERNAL_LEAD_CREATED"
+        )
+        assert internal["recipient_email"] == "intake.local@example.test"
+        assert internal["recipient_attorney_id"] is None
+        assert set(internal["payload"]) == {"prospectName", "prospectEmail", "submittedAt"}
+    finally:
+        asyncio.run(ensure_seeded_attorney())
+
+
+def test_local_supabase_outbox_failure_rolls_back_and_compensates_resume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if not get_settings().supabase_service_role_key:
+        pytest.skip("set SUPABASE_SERVICE_ROLE_KEY to the local service role key")
+
+    object_id = uuid4()
+    object_key = f"{object_id}.pdf"
+    attempt_key = f"local-outbox-failure-{uuid4()}"
+    asyncio.run(ensure_seeded_attorney())
+    asyncio.run(
+        execute_admin(
+            """
+            create or replace function app.fail_internal_notification_for_test()
+            returns trigger
+            language plpgsql
+            as $$
+            begin
+              if new.notification_type = 'INTERNAL_LEAD_CREATED' then
+                raise exception 'forced internal notification failure';
+              end if;
+              return new;
+            end;
+            $$;
+
+            drop trigger if exists fail_internal_notification_for_test
+              on app.notification_outbox;
+
+            create trigger fail_internal_notification_for_test
+              before insert on app.notification_outbox
+              for each row execute function app.fail_internal_notification_for_test();
+            """
+        )
+    )
+    monkeypatch.setattr("lead_api.leads.uuid.uuid4", lambda: object_id)
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/leads",
+                data=form_data(attempt_key),
+                files=resume_file(pdf_bytes("outbox-failure")),
+            )
+
+        assert response.status_code == 503
+        assert response.json()["code"] == "lead_persistence_failed"
+        attempt_count = asyncio.run(
+            fetchval_admin(
+                "select count(*) from app.submission_attempts where attempt_key = $1",
+                attempt_key,
+            )
+        )
+        assert attempt_count == 0
+        assert service_storage_response(object_key) != 200
+    finally:
+        asyncio.run(
+            execute_admin(
+                """
+                drop trigger if exists fail_internal_notification_for_test
+                  on app.notification_outbox;
+                drop function if exists app.fail_internal_notification_for_test();
+                """
+            )
+        )
 
 
 def test_local_supabase_submission_attempt_retry_conflict_and_repeated_email() -> None:

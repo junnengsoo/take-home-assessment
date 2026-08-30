@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     public_lead_rate_limit_window_seconds: int = 60
     public_lead_rate_limit_hmac_secret: str = "local-dev-rate-limit-secret-change-me"
     trusted_proxy_addresses: list[str] = Field(default_factory=list)
+    fallback_intake_address: str = "intake.local@example.test"
 
     @field_validator(
         "frontend_origins",
@@ -44,6 +45,14 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
+
+    @field_validator("fallback_intake_address")
+    @classmethod
+    def require_fallback_intake_address(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("fallback_intake_address must not be empty")
+        return normalized
 
     @property
     def required_configured(self) -> bool:

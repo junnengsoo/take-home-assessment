@@ -129,6 +129,7 @@ def test_public_lead_submission_persists_private_resume_metadata(
     assert created["storage_object_key"] != "resume.pdf"
     assert created["byte_size"] == len(pdf_bytes())
     assert created["sha256_digest"] != created["request_fingerprint"]
+    assert created["fallback_intake_address"] == "intake.local@example.test"
     assert "storage_object_key" not in response.json()
     assert len(fake_storage.uploads) == 1
     assert created["turnstile_verification_outcome"] == "SUCCESS"
