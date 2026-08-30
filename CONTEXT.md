@@ -28,12 +28,8 @@ _Avoid_: Admin, agent, staff user
 The Attorney accountable for ensuring a Lead is followed up. Assignment does not restrict other Attorneys from viewing the Lead or recording work on it.
 _Avoid_: Ownership, permission, exclusive assignee
 
-**Claim**:
-An Attorney's act of taking Assignment of an unassigned Lead. A Claim cannot replace an existing Assignment.
-_Avoid_: Reassignment, ownership transfer
-
 **Fallback Intake Address**:
-The internal email recipient notified when no Attorney is available for round-robin Assignment. It does not become the Lead's Assignment.
+The internal email recipient notified when no Attorney account is available for round-robin Assignment. It does not become the Lead's Assignment.
 _Avoid_: Default Attorney, assigned mailbox
 
 **Lead Status**:
