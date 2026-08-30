@@ -1,7 +1,7 @@
 # Take-home assessment
 
 A focused workspace for a software engineering take-home assessment designed to
-fit within approximately four hours.
+fit within approximately six hours.
 
 ## Status
 
@@ -15,4 +15,3 @@ begins.
 - Record scope and trade-offs in this README as the work progresses.
 - Track planned work and follow-ups in GitHub Issues.
 - Prefer a complete, tested core path over broad unfinished functionality.
-
