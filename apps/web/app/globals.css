@@ -633,9 +633,35 @@ input {
 .resume-preview-frame {
   width: 100%;
   min-height: 640px;
+  display: grid;
+  place-items: start center;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--mist);
+  overflow: auto;
+  padding: 16px;
+}
+
+.resume-preview-pages {
+  width: 100%;
+  display: grid;
+  justify-items: center;
+  gap: 16px;
+}
+
+.resume-preview-pages canvas {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+  background: white;
+  box-shadow: 0 18px 40px rgba(20, 61, 50, 0.14);
+}
+
+.resume-preview-loading {
+  align-self: center;
+  justify-self: center;
+  color: var(--muted);
+  font-weight: 700;
 }
 
 .resume-preview-fallback {

@@ -15,13 +15,33 @@ pnpm exec supabase db reset
 pnpm exec supabase status
 ```
 
+`pnpm exec supabase status` prints the local URLs used throughout the demo:
+
+- API URL: `http://127.0.0.1:54321`
+- Database URL: `postgresql://postgres:postgres@127.0.0.1:54322/postgres`
+- Studio URL: `http://127.0.0.1:54323`
+- Mailpit URL: `http://127.0.0.1:54324`
+- S3 Storage URL: `http://127.0.0.1:54321/storage/v1/s3`
+
+Recent Supabase CLI versions also print `Publishable key` and `Secret key`
+values in this normal status output. Those `sb_...` values are not the values
+to paste into the current application env names. This app currently expects
+the JWT-style local keys from:
+
+```bash
+pnpm exec supabase status --output env
+```
+
 Copy `.env.example` to `.env.local`, then fill these placeholders with the
-keys from `supabase status`:
+`--output env` values:
 
 - `SUPABASE_ANON_KEY`
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `PUBLIC_LEAD_RATE_LIMIT_HMAC_SECRET`
+
+Use `ANON_KEY` for both anon settings and `SERVICE_ROLE_KEY` for the server-only
+Storage setting.
 
 Set `FALLBACK_INTAKE_ADDRESS` to the internal mailbox that should receive new
 Lead notifications when no Attorney accounts exist.
@@ -32,6 +52,18 @@ Cloudflare widget:
 
 - `NEXT_PUBLIC_TURNSTILE_SITE_KEY=1x00000000000000000000AA`
 - `TURNSTILE_SECRET_KEY=1x0000000000000000000000000000000AA`
+
+For local manual smoke testing, Siteverify may return a static dummy success
+payload with no action and `example.com` as the hostname. If that happens, set
+these local `.env.local` values for the demo:
+
+- `TURNSTILE_EXPECTED_ACTION=`
+- `TURNSTILE_ALLOWED_HOSTNAMES=example.com`
+
+Those relaxed action and hostname settings are only for the local dummy-key
+demo. Hosted production must use real Turnstile keys, keep an expected action
+such as `lead_submit`, and restrict allowed hostnames to the exact frontend
+domains.
 
 ## Run
 
