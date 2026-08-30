@@ -32,6 +32,23 @@ class Settings(BaseSettings):
     public_lead_rate_limit_window_seconds: int = 60
     public_lead_rate_limit_hmac_secret: str = "local-dev-rate-limit-secret-change-me"
     trusted_proxy_addresses: list[str] = Field(default_factory=list)
+    email_provider: str = "local-smtp"
+    email_from_address: str = "Alma Intake <intake@alma.local>"
+    email_smtp_host: str = "127.0.0.1"
+    email_smtp_port: int = 54325
+    email_smtp_timeout_seconds: float = 5.0
+    email_smtp_starttls: bool = False
+    email_smtp_username: str = ""
+    email_smtp_password: str = ""
+    email_worker_batch_size: int = 10
+    email_worker_poll_seconds: float = 2.0
+    email_worker_lease_seconds: int = 300
+    email_worker_base_retry_seconds: int = 30
+    email_worker_max_retry_seconds: int = 3600
+    email_worker_database_pool_size: int = 2
+    resend_api_key: str = ""
+    resend_api_url: str = "https://api.resend.com/emails"
+    resend_timeout_seconds: float = 10.0
 
     @field_validator(
         "frontend_origins",
@@ -43,6 +60,13 @@ class Settings(BaseSettings):
     def split_csv(cls, value: object) -> object:
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator("email_provider")
+    @classmethod
+    def validate_email_provider(cls, value: str) -> str:
+        if value not in {"local-smtp", "resend"}:
+            raise ValueError("email_provider must be local-smtp or resend")
         return value
 
     @property

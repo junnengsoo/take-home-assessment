@@ -40,7 +40,7 @@ This root command starts:
 
 - Next.js at `http://localhost:3000`
 - FastAPI at `http://127.0.0.1:8000`
-- the Python worker on the host process
+- the Python email worker on the host process
 
 ## Seeded Attorney
 
@@ -105,3 +105,43 @@ object. If that compensating delete fails, search the API logs for
 `resume_compensation_delete_failed`, then verify the logged object key has no
 matching `app.resume_metadata.storage_object_key` before deleting it from the
 private `resumes` bucket in Supabase Studio.
+
+## Email delivery
+
+`pnpm dev` runs the lightweight Python email worker alongside Next.js and
+FastAPI. The worker claims due `app.email_outbox` rows directly from PostgreSQL
+using row locking, sends the message, and records the provider identifier,
+delivery timestamp, and attempt count on success.
+
+Local delivery uses Supabase CLI's Mailpit SMTP service by default:
+
+- SMTP: `127.0.0.1:54325`
+- Web inbox: `http://127.0.0.1:54324`
+
+Temporary failures are retained on the outbox row with sanitized error context
+and retried with exponential delay. After five failed attempts, the row moves to
+`FAILED` and remains inspectable in PostgreSQL instead of being discarded.
+
+Delivery is intentionally at-least-once. If the provider accepts a message but
+the worker crashes before PostgreSQL records success, a later worker may send
+that notification again. This rare duplicate is acceptable for the assessment;
+silent loss is not.
+
+The committed production-facing provider interface also supports Resend from
+the server-only worker process. Hosted production should set:
+
+- `EMAIL_PROVIDER=resend`
+- `RESEND_API_KEY=<server-only-resend-api-key>`
+- `EMAIL_FROM_ADDRESS=<verified-sender>`
+
+Do not expose `RESEND_API_KEY` to Next.js or any browser-facing environment.
+Outbox notification templates intentionally omit résumé attachments, Storage
+object keys, bearer tokens, and public download links. Internal notifications
+tell Attorneys to open the authenticated workspace to review the private
+résumé.
+
+Lead creation should enqueue one `PROSPECT_CONFIRMATION` row addressed to the
+Prospect and one `INTERNAL_NEW_LEAD` row addressed to the assigned Attorney, or
+to the Fallback Intake Address when no Assignment exists. The worker consumes
+the queued recipient and template payload; it does not perform Assignment or
+recipient selection itself.

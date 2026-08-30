@@ -34,7 +34,8 @@ write private resume objects. Set `PUBLIC_LEAD_RATE_LIMIT_HMAC_SECRET` to a
 local random value. The default Turnstile entries are Cloudflare's official
 local/automation test keys.
 
-Run Next.js, FastAPI, and the worker directly on the host with one root command:
+Run Next.js, FastAPI, and the email worker directly on the host with one root
+command:
 
 ```bash
 pnpm dev
@@ -91,6 +92,15 @@ request limit keyed by an HMAC of the selected network address, and managed
 Cloudflare Turnstile. Explicit Turnstile failures are rejected with retryable
 feedback; Cloudflare timeout, network failure, or service outage accepts the
 otherwise valid Lead with an internal `UNAVAILABLE` verification outcome.
+
+Notification email is delivered from `app.email_outbox` by the host-side Python
+worker. Local delivery uses Supabase CLI Mailpit SMTP at `127.0.0.1:54325`, and
+messages are inspectable in Mailpit at `http://127.0.0.1:54324`. The worker
+claims rows with PostgreSQL row locking, records provider identifiers and
+attempt counts on success, retries temporary failures with exponential delay,
+and retains terminal failures after five attempts. Delivery is at-least-once:
+a rare duplicate can occur after an ambiguous provider acknowledgement, but
+queued notifications should not be silently lost.
 
 If resume upload succeeds but database persistence fails, FastAPI attempts to
 delete the uploaded object before returning an error. If that compensating
