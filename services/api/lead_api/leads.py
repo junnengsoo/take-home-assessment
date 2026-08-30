@@ -262,6 +262,7 @@ async def submit_lead(
             byte_size=len(validated_resume.content),
             sha256_digest=validated_resume.sha256_digest,
             turnstile_verification_outcome=turnstile_outcome.value,
+            fallback_intake_address=settings.fallback_intake_address,
         )
     except SubmissionAttemptAlreadyExists as exc:
         await compensate_resume_upload(settings, stored_resume.object_key)

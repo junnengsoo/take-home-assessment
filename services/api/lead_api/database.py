@@ -74,6 +74,7 @@ class Database:
         byte_size: int,
         sha256_digest: str,
         turnstile_verification_outcome: str,
+        fallback_intake_address: str,
     ) -> asyncpg.Record:
         if self._pool is None and self._settings is not None:
             await self.connect(self._settings)
@@ -83,22 +84,54 @@ class Database:
         async with self._pool.acquire() as connection:
             try:
                 async with connection.transaction():
-                    lead_id = await connection.fetchval(
+                    await connection.execute(
+                        "select pg_advisory_xact_lock(hashtext('app.lead_assignment'))"
+                    )
+                    assignment = await connection.fetchrow(
+                        """
+                        select id, email::text as email, display_name
+                        from app.attorneys
+                        order by last_assigned_at asc nulls first, created_at asc, id asc
+                        limit 1
+                        for update
+                        """
+                    )
+                    assigned_attorney_id = assignment["id"] if assignment is not None else None
+                    internal_recipient = (
+                        assignment["email"] if assignment is not None else fallback_intake_address
+                    )
+                    assignment_label = (
+                        assignment["display_name"] if assignment is not None else "Unassigned"
+                    )
+
+                    lead = await connection.fetchrow(
                         """
                         insert into app.leads (
                           first_name,
                           last_name,
                           normalized_email,
-                          turnstile_verification_outcome
+                          turnstile_verification_outcome,
+                          assigned_attorney_id
                         )
-                        values ($1, $2, $3, $4)
-                        returning id
+                        values ($1, $2, $3, $4, $5)
+                        returning id, created_at
                         """,
                         first_name,
                         last_name,
                         normalized_email,
                         turnstile_verification_outcome,
+                        assigned_attorney_id,
                     )
+                    lead_id = lead["id"]
+                    if assigned_attorney_id is not None:
+                        await connection.execute(
+                            """
+                            update app.attorneys
+                            set last_assigned_at = clock_timestamp()
+                            where id = $1
+                            """,
+                            assigned_attorney_id,
+                        )
                     await connection.execute(
                         """
                         insert into app.resume_metadata (
@@ -161,6 +194,56 @@ class Database:
                         attempt_key,
                         request_fingerprint,
                         lead_id,
+                    )
+                    await connection.execute(
+                        """
+                        insert into app.email_outbox (
+                          lead_id,
+                          kind,
+                          recipient_email,
+                          payload
+                        )
+                        values (
+                          $1,
+                          'PROSPECT_CONFIRMATION',
+                          $2,
+                          jsonb_build_object(
+                            'prospectFirstName', $3::text,
+                            'submittedAt', $4::timestamptz
+                          )
+                        )
+                        """,
+                        lead_id,
+                        normalized_email,
+                        first_name,
+                        lead["created_at"],
+                    )
+                    await connection.execute(
+                        """
+                        insert into app.email_outbox (
+                          lead_id,
+                          kind,
+                          recipient_email,
+                          payload
+                        )
+                        values (
+                          $1,
+                          'INTERNAL_NEW_LEAD',
+                          $2,
+                          jsonb_build_object(
+                            'prospectName', $3::text,
+                            'prospectEmail', $4::text,
+                            'assignment', $5::text,
+                            'submittedAt', $6::timestamptz
+                          )
+                        )
+                        """,
+                        lead_id,
+                        internal_recipient,
+                        f"{first_name} {last_name}",
+                        normalized_email,
+                        assignment_label,
+                        lead["created_at"],
                     )
             except asyncpg.UniqueViolationError as exc:
                 existing = await self._fetch_submission_attempt(connection, attempt_key)
@@ -227,7 +310,8 @@ class Database:
               sa.attempt_key,
               sa.request_fingerprint,
               sa.lead_id::text as lead_id,
-              l.version
+              l.version,
+              l.assigned_attorney_id::text as assigned_attorney_id
             from app.submission_attempts sa
             join app.leads l on l.id = sa.lead_id
             where sa.attempt_key = $1

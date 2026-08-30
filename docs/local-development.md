@@ -23,6 +23,9 @@ keys from `supabase status`:
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `PUBLIC_LEAD_RATE_LIMIT_HMAC_SECRET`
 
+Set `FALLBACK_INTAKE_ADDRESS` to the internal mailbox that should receive new
+Lead notifications when no Attorney accounts exist.
+
 The committed defaults use Cloudflare's official Turnstile test site key and
 secret key so local development and automation do not depend on a production
 Cloudflare widget:
@@ -50,7 +53,9 @@ Use the seeded account after `pnpm exec supabase db reset`:
 - Password: `LocalAttorney123!`
 
 Public signup is disabled. Create additional Attorney accounts through
-Supabase Studio at `http://127.0.0.1:54323`.
+Supabase Studio at `http://127.0.0.1:54323`. Every administratively created
+account automatically receives an Attorney profile and participates in
+round-robin Assignment.
 
 ## Health
 
@@ -105,6 +110,13 @@ object. If that compensating delete fails, search the API logs for
 `resume_compensation_delete_failed`, then verify the logged object key has no
 matching `app.resume_metadata.storage_object_key` before deleting it from the
 private `resumes` bucket in Supabase Studio.
+
+Successful Lead creation queues two `app.email_outbox` rows in the same
+database transaction as the Lead, résumé metadata, initial `PENDING` Status
+Change, Assignment, creation audit event, and Submission Attempt record. One
+row targets the Prospect's submitted email; the internal row targets the
+assigned Attorney or fallback address and stores only Prospect name, Prospect
+email, and submission time.
 
 ## Email delivery
 

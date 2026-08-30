@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     public_lead_rate_limit_window_seconds: int = 60
     public_lead_rate_limit_hmac_secret: str = "local-dev-rate-limit-secret-change-me"
     trusted_proxy_addresses: list[str] = Field(default_factory=list)
+    fallback_intake_address: str = ""
     email_provider: str = "local-smtp"
     email_from_address: str = "Alma Intake <intake@alma.local>"
     email_smtp_host: str = "127.0.0.1"
@@ -62,6 +63,11 @@ class Settings(BaseSettings):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
 
+    @field_validator("fallback_intake_address")
+    @classmethod
+    def normalize_fallback_intake_address(cls, value: str) -> str:
+        return value.strip()
+
     @field_validator("email_provider")
     @classmethod
     def validate_email_provider(cls, value: str) -> str:
@@ -76,6 +82,7 @@ class Settings(BaseSettings):
             and self.supabase_url
             and self.supabase_anon_key
             and self.supabase_service_role_key
+            and self.fallback_intake_address
         )
 
 

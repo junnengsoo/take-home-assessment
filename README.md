@@ -32,7 +32,8 @@ Then copy `.env.example` to `.env.local` and replace `SUPABASE_ANON_KEY` and
 service role key from the same status output; it is used only by FastAPI to
 write private resume objects. Set `PUBLIC_LEAD_RATE_LIMIT_HMAC_SECRET` to a
 local random value. The default Turnstile entries are Cloudflare's official
-local/automation test keys.
+local/automation test keys. `FALLBACK_INTAKE_ADDRESS` controls the internal
+notification recipient used when no Attorney account exists.
 
 Run Next.js, FastAPI, and the email worker directly on the host with one root
 command:
@@ -57,7 +58,8 @@ Seeded Attorney login:
 Supabase Auth public signup is disabled locally. Email/password sign-in stays
 enabled so administratively created Attorneys can sign in. Additional Attorney
 accounts are created in Supabase Studio; the database trigger creates an
-Attorney profile for each account.
+Attorney profile for each account. All Attorney profiles participate in
+round-robin Assignment automatically.
 
 ## Verification
 
@@ -86,6 +88,18 @@ Public Lead creation accepts one PDF, DOC, or DOCX resume up to 5 MiB through
 FastAPI at `POST /api/v1/leads`. Resume bytes are uploaded to the private
 `resumes` Storage bucket with a generated object key, while the original
 filename is kept only in private resume metadata.
+
+Each accepted Lead is assigned to the least-recently-assigned Attorney inside
+the Lead creation transaction. If no Attorneys exist, the Lead remains
+unassigned and the configured Fallback Intake Address receives the internal
+notification.
+
+Lead creation also writes two durable `app.email_outbox` records in the
+same transaction: one Prospect confirmation to the submitted email and one
+internal notification to the assigned Attorney or fallback address. The
+internal payload is limited to Prospect name, email, and submission time;
+résumé bytes, object keys, public URLs, filenames, tokens, and secrets are not
+queued.
 
 Public Lead creation is protected by a hidden honeypot, a PostgreSQL-backed
 request limit keyed by an HMAC of the selected network address, and managed
