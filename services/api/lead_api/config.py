@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     database_url: str = Field(default="postgresql://app_api:local_app_api_password@127.0.0.1:54322/postgres")
     supabase_url: AnyHttpUrl = "http://127.0.0.1:54321"
     supabase_anon_key: str = ""
+    supabase_service_role_key: str = ""
+    resume_bucket: str = "resumes"
     frontend_origins: list[str] = Field(
         default_factory=lambda: ["http://localhost:3000", "http://127.0.0.1:3000"]
     )
@@ -28,7 +30,12 @@ class Settings(BaseSettings):
 
     @property
     def required_configured(self) -> bool:
-        return bool(self.database_url and self.supabase_url and self.supabase_anon_key)
+        return bool(
+            self.database_url
+            and self.supabase_url
+            and self.supabase_anon_key
+            and self.supabase_service_role_key
+        )
 
 
 @lru_cache

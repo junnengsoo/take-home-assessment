@@ -28,7 +28,9 @@ pnpm exec supabase db reset
 
 Then copy `.env.example` to `.env.local` and replace `SUPABASE_ANON_KEY` and
 `NEXT_PUBLIC_SUPABASE_ANON_KEY` with the local publishable key printed by
-`pnpm exec supabase status`.
+`pnpm exec supabase status`. Replace `SUPABASE_SERVICE_ROLE_KEY` with the local
+service role key from the same status output; it is used only by FastAPI to
+write private resume objects.
 
 Run Next.js, FastAPI, and the worker directly on the host with one root command:
 
@@ -76,6 +78,19 @@ Supabase Auth only to establish and refresh a session, then sends the Supabase
 bearer token to FastAPI for protected application data. Application tables live
 in the non-public `app` PostgreSQL schema and are granted only to the local
 least-privileged `app_api` role used by FastAPI.
+
+Public Lead creation accepts one PDF, DOC, or DOCX resume up to 5 MiB through
+FastAPI at `POST /api/v1/leads`. Resume bytes are uploaded to the private
+`resumes` Storage bucket with a generated object key, while the original
+filename is kept only in private resume metadata.
+
+If resume upload succeeds but database persistence fails, FastAPI attempts to
+delete the uploaded object before returning an error. If that compensating
+delete also fails, the API logs `resume_compensation_delete_failed` with the
+private bucket and generated object key. To clean up such an orphan locally,
+open Supabase Studio Storage, select the private `resumes` bucket, verify that
+the logged object key has no matching `app.resume_metadata.storage_object_key`,
+and delete that object.
 
 ## Working agreements
 

@@ -75,6 +75,7 @@ async def test_readiness_reports_missing_configuration(monkeypatch: pytest.Monke
 async def test_readiness_reports_database_dependency(monkeypatch: pytest.MonkeyPatch) -> None:
     get_settings.cache_clear()
     monkeypatch.setenv("SUPABASE_ANON_KEY", "test-anon-key")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "test-service-role-key")
 
     async def ready() -> bool:
         return False
