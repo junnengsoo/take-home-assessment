@@ -1,0 +1,27 @@
+{
+  "name": "lead-intake",
+  "private": true,
+  "packageManager": "pnpm@10.7.1",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "dev": "dotenv -e .env.local -- concurrently --kill-others --names web,api,worker --prefix-colors green,blue,magenta \"pnpm --filter @lead-intake/web dev\" \"PYTHONPATH=services/api uv run uvicorn lead_api.main:app --reload --host 127.0.0.1 --port 8000\" \"PYTHONPATH=services/api:services/worker uv run python -m lead_worker\"",
+    "supabase:start": "supabase start",
+    "supabase:reset": "supabase db reset",
+    "supabase:stop": "supabase stop",
+    "test": "pnpm --filter @lead-intake/web lint && uv run pytest",
+    "test:api": "uv run pytest services/api/tests",
+    "test:local-supabase": "RUN_LOCAL_SUPABASE_TESTS=1 uv run pytest services/api/tests/integration"
+  },
+  "devDependencies": {
+    "concurrently": "9.1.2",
+    "dotenv-cli": "8.0.0",
+    "supabase": "2.48.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "supabase"
+    ]
+  }
+}
