@@ -5,49 +5,8 @@ import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { createClient } from "../../../../lib/supabase";
-
-type Attorney = {
-  id: string;
-  email: string;
-  displayName: string;
-};
-
-type Status = "PENDING" | "REACHED_OUT";
-
-type LeadDetail = {
-  id: string;
-  firstName: string;
-  lastName: string;
-  email: string;
-  status: Status;
-  version: number;
-  createdAt: string;
-  assignedAttorney: Attorney | null;
-  resume: {
-    id: string;
-    originalFilename: string;
-    contentType: string;
-    byteSize: number;
-    createdAt: string;
-    previewable: boolean;
-  };
-  statusChanges: Array<{
-    id: string;
-    status: Status;
-    actor:
-      | { type: "SYSTEM" }
-      | {
-          type: "ATTORNEY";
-          attorney: Attorney;
-        };
-    createdAt: string;
-  }>;
-};
-
-const STATUS_LABELS = {
-  PENDING: "Pending",
-  REACHED_OUT: "Reached out"
-};
+import { requestId, STATUS_LABELS, type LeadDetail } from "./lead-detail-model";
+import { LeadStatusAction } from "./lead-status-action";
 
 function formatDate(value: string) {
   return new Intl.DateTimeFormat("en", {
@@ -64,13 +23,6 @@ function formatBytes(value: number) {
     return `${Math.max(1, Math.round(value / 1024))} KiB`;
   }
   return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
-}
-
-function requestId(prefix: string) {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return `${prefix}-${crypto.randomUUID()}`;
-  }
-  return `${prefix}-${Date.now()}`;
 }
 
 function filenameFromDisposition(header: string | null, fallback: string) {
@@ -395,6 +347,14 @@ export default function LeadDetailPage() {
               </section>
 
               <aside className="detail-panel secondary-detail-panel">
+                <LeadStatusAction
+                  apiUrl={apiUrl}
+                  lead={lead}
+                  token={token}
+                  onLeadUpdated={setLead}
+                  onUnauthorized={() => router.replace("/sign-in")}
+                />
+
                 <section aria-label="Assignment">
                   <p className="eyebrow">Assignment</p>
                   <h3>{lead.assignedAttorney?.displayName ?? "Unassigned"}</h3>
