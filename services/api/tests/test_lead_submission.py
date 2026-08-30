@@ -5,6 +5,8 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from lead_api.abuse import TurnstileExplicitFailure, TurnstileOutcome, TurnstileUnavailable
+from lead_api.config import Settings
 from lead_api.database import LeadPersistenceError, SubmissionAttemptAlreadyExists
 from lead_api.leads import MAX_RESUME_BYTES
 from lead_api.main import app
@@ -55,6 +57,8 @@ def form_data(attempt_key: str = "attempt-123456") -> dict[str, str]:
         "lastName": " Lovelace ",
         "email": " ADA@example.COM ",
         "submissionAttemptKey": attempt_key,
+        "turnstileToken": "fresh-turnstile-token",
+        "website": "",
     }
 
 
@@ -79,6 +83,18 @@ def fake_storage(monkeypatch: pytest.MonkeyPatch) -> FakeStorage:
     storage = FakeStorage()
     monkeypatch.setattr("lead_api.leads.resume_storage", storage)
     return storage
+
+
+@pytest.fixture(autouse=True)
+def allow_abuse_controls(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def allow_rate_limit(**kwargs):
+        return True
+
+    async def pass_turnstile(*args, **kwargs):
+        return TurnstileOutcome.SUCCESS
+
+    monkeypatch.setattr("lead_api.leads.database.consume_public_lead_rate_limit", allow_rate_limit)
+    monkeypatch.setattr("lead_api.leads.verify_turnstile", pass_turnstile)
 
 
 def test_public_lead_submission_persists_private_resume_metadata(
@@ -115,6 +131,220 @@ def test_public_lead_submission_persists_private_resume_metadata(
     assert created["sha256_digest"] != created["request_fingerprint"]
     assert "storage_object_key" not in response.json()
     assert len(fake_storage.uploads) == 1
+    assert created["turnstile_verification_outcome"] == "SUCCESS"
+
+
+def test_explicit_turnstile_rejection_does_not_create_lead(
+    monkeypatch: pytest.MonkeyPatch, fake_storage: FakeStorage
+) -> None:
+    async def fail_turnstile(*args, **kwargs):
+        raise TurnstileExplicitFailure(["invalid-input-response"])
+
+    async def no_existing(attempt_key: str):
+        return None
+
+    async def create_lead_submission(**kwargs):
+        raise AssertionError("explicit bot verification failures must not persist a Lead")
+
+    monkeypatch.setattr("lead_api.leads.verify_turnstile", fail_turnstile)
+    monkeypatch.setattr("lead_api.leads.database.fetch_submission_attempt", no_existing)
+    monkeypatch.setattr("lead_api.leads.database.create_lead_submission", create_lead_submission)
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/leads", data=form_data(), files=resume_file())
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "turnstile_verification_failed"
+    assert "try again" in response.json()["detail"].lower()
+    assert fake_storage.uploads == []
+
+
+def test_expired_or_replayed_turnstile_token_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, fake_storage: FakeStorage
+) -> None:
+    async def duplicate_turnstile(*args, **kwargs):
+        raise TurnstileExplicitFailure(["timeout-or-duplicate"])
+
+    async def no_existing(attempt_key: str):
+        return None
+
+    async def create_lead_submission(**kwargs):
+        raise AssertionError("expired or replayed tokens must not persist a Lead")
+
+    monkeypatch.setattr("lead_api.leads.verify_turnstile", duplicate_turnstile)
+    monkeypatch.setattr("lead_api.leads.database.fetch_submission_attempt", no_existing)
+    monkeypatch.setattr("lead_api.leads.database.create_lead_submission", create_lead_submission)
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/leads", data=form_data(), files=resume_file())
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "turnstile_verification_failed"
+    assert fake_storage.uploads == []
+
+
+def test_turnstile_infrastructure_failure_accepts_lead_with_internal_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_storage: FakeStorage,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    created = {}
+
+    async def unavailable_turnstile(*args, **kwargs):
+        raise TurnstileUnavailable("timeout")
+
+    async def no_existing(attempt_key: str):
+        return None
+
+    async def create_lead_submission(**kwargs):
+        created.update(kwargs)
+        return make_lead()
+
+    monkeypatch.setattr("lead_api.leads.verify_turnstile", unavailable_turnstile)
+    monkeypatch.setattr("lead_api.leads.database.fetch_submission_attempt", no_existing)
+    monkeypatch.setattr("lead_api.leads.database.create_lead_submission", create_lead_submission)
+
+    with TestClient(app, client=("203.0.113.10", 50000)) as client:
+        response = client.post("/api/v1/leads", data=form_data(), files=resume_file())
+
+    assert response.status_code == 201
+    assert created["turnstile_verification_outcome"] == "UNAVAILABLE"
+    assert "turnstile_verification_unavailable" in caplog.text
+    assert "fresh-turnstile-token" not in caplog.text
+    assert "203.0.113.10" not in caplog.text
+    assert "ada@example.com" not in caplog.text
+
+
+def test_rate_limit_runs_before_turnstile_and_uses_hmac_address_key(
+    monkeypatch: pytest.MonkeyPatch, fake_storage: FakeStorage
+) -> None:
+    captured = {}
+
+    async def reject_rate_limit(**kwargs):
+        captured.update(kwargs)
+        return False
+
+    async def pass_turnstile(*args, **kwargs):
+        raise AssertionError("Turnstile should not run after the request limit rejects")
+
+    async def no_existing(attempt_key: str):
+        return None
+
+    monkeypatch.setattr(
+        "lead_api.leads.database.consume_public_lead_rate_limit", reject_rate_limit
+    )
+    monkeypatch.setattr("lead_api.leads.verify_turnstile", pass_turnstile)
+    monkeypatch.setattr("lead_api.leads.database.fetch_submission_attempt", no_existing)
+
+    with TestClient(app, client=("203.0.113.10", 50000)) as client:
+        response = client.post("/api/v1/leads", data=form_data(), files=resume_file())
+
+    assert response.status_code == 429
+    assert response.json()["code"] == "public_lead_rate_limited"
+    assert captured["address_key"] != "203.0.113.10"
+    assert len(captured["address_key"]) == 64
+    assert all(character in "0123456789abcdef" for character in captured["address_key"])
+    assert fake_storage.uploads == []
+
+
+def test_trusted_proxy_forwarded_address_changes_rate_limit_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    keys = []
+
+    async def capture_rate_limit(**kwargs):
+        keys.append(kwargs["address_key"])
+        return False
+
+    async def no_existing(attempt_key: str):
+        return None
+
+    monkeypatch.setattr(
+        "lead_api.leads.get_settings",
+        lambda: Settings(trusted_proxy_addresses=["198.51.100.10"]),
+    )
+    monkeypatch.setattr(
+        "lead_api.leads.database.consume_public_lead_rate_limit", capture_rate_limit
+    )
+    monkeypatch.setattr("lead_api.leads.database.fetch_submission_attempt", no_existing)
+
+    data = form_data()
+    with TestClient(app, client=("198.51.100.10", 50000)) as client:
+        client.post(
+            "/api/v1/leads",
+            data={**data, "submissionAttemptKey": "trusted-proxy-1"},
+            files=resume_file(),
+            headers={"x-forwarded-for": "203.0.113.77, 198.51.100.10"},
+        )
+        client.post(
+            "/api/v1/leads",
+            data={**data, "submissionAttemptKey": "trusted-proxy-2"},
+            files=resume_file(),
+            headers={"x-forwarded-for": "203.0.113.78, 198.51.100.10"},
+        )
+
+    assert len(keys) == 2
+    assert keys[0] != keys[1]
+
+
+def test_untrusted_proxy_forwarded_address_is_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    keys = []
+
+    async def capture_rate_limit(**kwargs):
+        keys.append(kwargs["address_key"])
+        return False
+
+    async def no_existing(attempt_key: str):
+        return None
+
+    monkeypatch.setattr(
+        "lead_api.leads.database.consume_public_lead_rate_limit", capture_rate_limit
+    )
+    monkeypatch.setattr("lead_api.leads.database.fetch_submission_attempt", no_existing)
+
+    data = form_data()
+    with TestClient(app, client=("198.51.100.20", 50000)) as client:
+        client.post(
+            "/api/v1/leads",
+            data={**data, "submissionAttemptKey": "untrusted-proxy-1"},
+            files=resume_file(),
+            headers={"x-forwarded-for": "203.0.113.77"},
+        )
+        client.post(
+            "/api/v1/leads",
+            data={**data, "submissionAttemptKey": "untrusted-proxy-2"},
+            files=resume_file(),
+            headers={"x-forwarded-for": "203.0.113.78"},
+        )
+
+    assert len(keys) == 2
+    assert keys[0] == keys[1]
+
+
+def test_honeypot_submission_is_rejected_before_turnstile(
+    monkeypatch: pytest.MonkeyPatch, fake_storage: FakeStorage
+) -> None:
+    async def pass_turnstile(*args, **kwargs):
+        raise AssertionError("Turnstile should not run for honeypot submissions")
+
+    async def no_existing(attempt_key: str):
+        return None
+
+    monkeypatch.setattr("lead_api.leads.verify_turnstile", pass_turnstile)
+    monkeypatch.setattr("lead_api.leads.database.fetch_submission_attempt", no_existing)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/leads",
+            data={**form_data(), "website": "https://spam.example"},
+            files=resume_file(),
+        )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "honeypot_triggered"
+    assert fake_storage.uploads == []
 
 
 @pytest.mark.parametrize(
@@ -210,6 +440,11 @@ def test_idempotent_retry_returns_existing_lead_without_upload(
         return lead
 
     monkeypatch.setattr("lead_api.leads.database.fetch_submission_attempt", existing)
+
+    async def fail_if_turnstile_runs(*args, **kwargs):
+        raise AssertionError("idempotent response-loss retries should return the existing Lead")
+
+    monkeypatch.setattr("lead_api.leads.verify_turnstile", fail_if_turnstile_runs)
 
     with TestClient(app) as client:
         response = client.post("/api/v1/leads", data=form_data(), files=resume_file())

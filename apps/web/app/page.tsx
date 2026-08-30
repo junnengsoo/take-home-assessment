@@ -1,9 +1,43 @@
 "use client";
 
-import { ChangeEvent, FormEvent, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import Script from "next/script";
 
 type FieldErrors = Partial<Record<"firstName" | "lastName" | "email" | "resume", string>>;
+type TurnstileChallenge = {
+  resolve: (token: string) => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+};
+type TurnstileApi = {
+  render: (
+    element: HTMLElement,
+    options: {
+      sitekey: string;
+      action: string;
+      execution: "execute";
+      appearance: "execute";
+      callback: (token: string) => void;
+      "expired-callback": () => void;
+      "timeout-callback": () => void;
+      "error-callback": () => void;
+    }
+  ) => string;
+  execute: (widgetId: string) => void;
+  reset: (widgetId: string) => void;
+  remove: (widgetId: string) => void;
+};
+
+declare global {
+  interface Window {
+    turnstile?: TurnstileApi;
+  }
+}
+
+const TURNSTILE_SITE_KEY =
+  process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY ?? "1x00000000000000000000AA";
+const TURNSTILE_ACTION = "lead_submit";
 
 function newSubmissionAttemptKey() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -20,12 +54,59 @@ export default function Home() {
   const [resume, setResume] = useState<File | null>(null);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [formError, setFormError] = useState("");
+  const [turnstileFeedback, setTurnstileFeedback] = useState("");
+  const [turnstileReady, setTurnstileReady] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submissionAttemptKey] = useState(newSubmissionAttemptKey);
+  const turnstileContainerRef = useRef<HTMLDivElement | null>(null);
+  const widgetIdRef = useRef<string | null>(null);
+  const pendingChallengeRef = useRef<TurnstileChallenge | null>(null);
   const acceptedTypes = useMemo(
     () => ".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     []
   );
+
+  useEffect(() => {
+    if (!turnstileReady || !window.turnstile || !turnstileContainerRef.current) {
+      return;
+    }
+    if (widgetIdRef.current) {
+      return;
+    }
+
+    widgetIdRef.current = window.turnstile.render(turnstileContainerRef.current, {
+      sitekey: TURNSTILE_SITE_KEY,
+      action: TURNSTILE_ACTION,
+      execution: "execute",
+      appearance: "execute",
+      callback: (token: string) => {
+        const pending = pendingChallengeRef.current;
+        if (!pending) {
+          return;
+        }
+        clearTimeout(pending.timer);
+        pendingChallengeRef.current = null;
+        setTurnstileFeedback("Verification complete. Submitting your Lead...");
+        pending.resolve(token);
+      },
+      "expired-callback": () => {
+        rejectPendingTurnstile("Verification expired. Please retry.");
+      },
+      "timeout-callback": () => {
+        rejectPendingTurnstile("Verification timed out. Please retry.");
+      },
+      "error-callback": () => {
+        rejectPendingTurnstile("Verification could not complete. Please retry.");
+      }
+    });
+
+    return () => {
+      if (widgetIdRef.current && window.turnstile) {
+        window.turnstile.remove(widgetIdRef.current);
+      }
+      widgetIdRef.current = null;
+    };
+  }, [turnstileReady]);
 
   function validate() {
     const nextErrors: FieldErrors = {};
@@ -50,17 +131,28 @@ export default function Home() {
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setFormError("");
+    setTurnstileFeedback("");
 
     if (!validate() || !resume) {
       return;
     }
 
     setSubmitting(true);
+    const turnstileToken = await executeTurnstileChallenge();
+    if (!turnstileToken) {
+      setFormError("Verification could not finish. Please retry your submission.");
+      resetTurnstile();
+      setSubmitting(false);
+      return;
+    }
+
     const data = new FormData();
     data.append("firstName", firstName);
     data.append("lastName", lastName);
     data.append("email", email);
     data.append("submissionAttemptKey", submissionAttemptKey);
+    data.append("turnstileToken", turnstileToken);
+    data.append("website", "");
     data.append("resume", resume);
 
     const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
@@ -72,15 +164,64 @@ export default function Home() {
       const body = await response.json();
 
       if (!response.ok) {
-        setFormError(body.detail ?? "We could not submit your resume. Please try again.");
+        setFormError(
+          body.detail ??
+            "We could not submit your resume. Please retry; verification will run again."
+        );
+        resetTurnstile();
         setSubmitting(false);
         return;
       }
 
       router.replace(`/confirmation?leadId=${encodeURIComponent(body.leadId)}`);
     } catch {
-      setFormError("The intake service is not reachable. Please try again.");
+      setFormError(
+        "The intake service is not reachable. Please retry; verification will run again."
+      );
+      resetTurnstile();
       setSubmitting(false);
+    }
+  }
+
+  function rejectPendingTurnstile(message: string) {
+    const pending = pendingChallengeRef.current;
+    setTurnstileFeedback(message);
+    if (!pending) {
+      return;
+    }
+    clearTimeout(pending.timer);
+    pendingChallengeRef.current = null;
+    pending.reject(new Error(message));
+  }
+
+  async function executeTurnstileChallenge() {
+    if (!window.turnstile || !widgetIdRef.current) {
+      setTurnstileFeedback("Verification is still loading. Please retry.");
+      return "";
+    }
+
+    if (pendingChallengeRef.current) {
+      pendingChallengeRef.current.reject(new Error("superseded"));
+      pendingChallengeRef.current = null;
+    }
+
+    setTurnstileFeedback("Running verification...");
+    try {
+      return await new Promise<string>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          rejectPendingTurnstile("Verification timed out. Please retry.");
+        }, 15000);
+        pendingChallengeRef.current = { resolve, reject, timer };
+        window.turnstile?.execute(widgetIdRef.current as string);
+      });
+    } catch {
+      return "";
+    }
+  }
+
+  function resetTurnstile() {
+    if (window.turnstile && widgetIdRef.current) {
+      window.turnstile.reset(widgetIdRef.current);
     }
   }
 
@@ -91,6 +232,11 @@ export default function Home() {
 
   return (
     <main className="intake-page">
+      <Script
+        src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"
+        strategy="afterInteractive"
+        onLoad={() => setTurnstileReady(true)}
+      />
       <section className="intake-shell" aria-label="Public lead intake">
         <div className="intake-copy">
           <p className="eyebrow">Guided Calm intake</p>
@@ -192,6 +338,21 @@ export default function Home() {
               </p>
             ) : null}
           </div>
+          <div className="honeypot-field" aria-hidden="true">
+            <label htmlFor="website">Website</label>
+            <input
+              id="website"
+              name="website"
+              type="text"
+              autoComplete="off"
+              tabIndex={-1}
+              disabled={submitting}
+            />
+          </div>
+          <div ref={turnstileContainerRef} />
+          <p className="field-help" role="status" aria-live="polite">
+            {turnstileFeedback}
+          </p>
           <button className="primary-button" type="submit" disabled={submitting}>
             {submitting ? "Submitting..." : "Submit Lead"}
           </button>

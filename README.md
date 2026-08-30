@@ -30,7 +30,9 @@ Then copy `.env.example` to `.env.local` and replace `SUPABASE_ANON_KEY` and
 `NEXT_PUBLIC_SUPABASE_ANON_KEY` with the local publishable key printed by
 `pnpm exec supabase status`. Replace `SUPABASE_SERVICE_ROLE_KEY` with the local
 service role key from the same status output; it is used only by FastAPI to
-write private resume objects.
+write private resume objects. Set `PUBLIC_LEAD_RATE_LIMIT_HMAC_SECRET` to a
+local random value. The default Turnstile entries are Cloudflare's official
+local/automation test keys.
 
 Run Next.js, FastAPI, and the worker directly on the host with one root command:
 
@@ -83,6 +85,12 @@ Public Lead creation accepts one PDF, DOC, or DOCX resume up to 5 MiB through
 FastAPI at `POST /api/v1/leads`. Resume bytes are uploaded to the private
 `resumes` Storage bucket with a generated object key, while the original
 filename is kept only in private resume metadata.
+
+Public Lead creation is protected by a hidden honeypot, a PostgreSQL-backed
+request limit keyed by an HMAC of the selected network address, and managed
+Cloudflare Turnstile. Explicit Turnstile failures are rejected with retryable
+feedback; Cloudflare timeout, network failure, or service outage accepts the
+otherwise valid Lead with an internal `UNAVAILABLE` verification outcome.
 
 If resume upload succeeds but database persistence fails, FastAPI attempts to
 delete the uploaded object before returning an error. If that compensating

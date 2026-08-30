@@ -208,6 +208,14 @@ input {
   color: #8f2f22;
 }
 
+.honeypot-field {
+  position: absolute;
+  left: -10000px;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+}
+
 .primary-button {
   width: 100%;
   min-height: 46px;

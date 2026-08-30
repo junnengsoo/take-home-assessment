@@ -21,6 +21,14 @@ keys from `supabase status`:
 - `SUPABASE_ANON_KEY`
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 - `SUPABASE_SERVICE_ROLE_KEY`
+- `PUBLIC_LEAD_RATE_LIMIT_HMAC_SECRET`
+
+The committed defaults use Cloudflare's official Turnstile test site key and
+secret key so local development and automation do not depend on a production
+Cloudflare widget:
+
+- `NEXT_PUBLIC_TURNSTILE_SITE_KEY=1x00000000000000000000AA`
+- `TURNSTILE_SECRET_KEY=1x0000000000000000000000000000000AA`
 
 ## Run
 
@@ -65,6 +73,32 @@ Each form load creates a Submission Attempt key. Retrying the same Submission
 Attempt with the same fingerprint returns the existing Lead, while changing
 content under the same key returns `409 Conflict`. A later form load creates a
 new Submission Attempt and can create a separate Lead even with the same email.
+
+The form executes a managed Cloudflare Turnstile challenge only when the
+Prospect submits. The browser sends the resulting token to FastAPI in the same
+multipart request as `turnstileToken`; the Turnstile secret is read only from
+FastAPI configuration.
+
+FastAPI applies the public request limit before Turnstile verification. The
+rate-limit bucket key is an HMAC of the selected network address using
+`PUBLIC_LEAD_RATE_LIMIT_HMAC_SECRET`; raw addresses are not stored in the
+application table. `X-Forwarded-For` and `X-Real-IP` are used only when the
+immediate peer matches `TRUSTED_PROXY_ADDRESSES`, which accepts comma-separated
+addresses or CIDR ranges.
+
+Explicit Turnstile validation failures return a retryable problem response and
+do not create a Lead. If Cloudflare verification times out, has a network
+failure, or returns a service outage, FastAPI accepts the otherwise valid Lead,
+stores `UNAVAILABLE` as the internal verification outcome, and logs a sanitized
+warning without tokens, names, email addresses, filenames, or raw network
+addresses.
+
+For hosted production, create a managed Turnstile widget restricted to the exact
+frontend hostnames, set `NEXT_PUBLIC_TURNSTILE_SITE_KEY` to the public site key,
+set `TURNSTILE_SECRET_KEY` only in the FastAPI runtime, and set
+`TURNSTILE_ALLOWED_HOSTNAMES` to those exact hostnames. Hosted CSP must allow
+Turnstile scripts and frames from `https://challenges.cloudflare.com`; the
+Next.js app's CSP includes these allowances.
 
 If database persistence fails after Storage upload, the API deletes the uploaded
 object. If that compensating delete fails, search the API logs for

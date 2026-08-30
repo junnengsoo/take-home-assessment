@@ -20,12 +20,29 @@ class Settings(BaseSettings):
     frontend_origins: list[str] = Field(
         default_factory=lambda: ["http://localhost:3000", "http://127.0.0.1:3000"]
     )
+    turnstile_secret_key: str = "1x0000000000000000000000000000000AA"
+    turnstile_expected_action: str = "lead_submit"
+    turnstile_allowed_hostnames: list[str] = Field(
+        default_factory=lambda: ["localhost", "127.0.0.1"]
+    )
+    turnstile_timeout_seconds: float = 3.0
+    turnstile_siteverify_url: str = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+    public_lead_rate_limit_enabled: bool = True
+    public_lead_rate_limit_max_requests: int = 20
+    public_lead_rate_limit_window_seconds: int = 60
+    public_lead_rate_limit_hmac_secret: str = "local-dev-rate-limit-secret-change-me"
+    trusted_proxy_addresses: list[str] = Field(default_factory=list)
 
-    @field_validator("frontend_origins", mode="before")
+    @field_validator(
+        "frontend_origins",
+        "turnstile_allowed_hostnames",
+        "trusted_proxy_addresses",
+        mode="before",
+    )
     @classmethod
-    def split_origins(cls, value: object) -> object:
+    def split_csv(cls, value: object) -> object:
         if isinstance(value, str):
-            return [origin.strip() for origin in value.split(",") if origin.strip()]
+            return [item.strip() for item in value.split(",") if item.strip()]
         return value
 
     @property
