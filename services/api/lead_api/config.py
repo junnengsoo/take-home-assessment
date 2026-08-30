@@ -5,7 +5,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=(".env.local", ".env"), extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=(".env.local", ".env"),
+        extra="ignore",
+        enable_decoding=False,
+    )
 
     app_env: str = "local"
     database_url: str = Field(default="postgresql://app_api:local_app_api_password@127.0.0.1:54322/postgres")
