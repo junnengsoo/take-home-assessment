@@ -6,7 +6,7 @@
     "node": ">=22.0.0"
   },
   "scripts": {
-    "dev": "concurrently --kill-others --names web,api,worker --prefix-colors green,blue,magenta \"pnpm --filter @lead-intake/web dev\" \"PYTHONPATH=services/api uv run uvicorn lead_api.main:app --reload --host 127.0.0.1 --port 8000\" \"PYTHONPATH=services/api:services/worker uv run python -m lead_worker\"",
+    "dev": "dotenv -e .env.local -- concurrently --kill-others --names web,api,worker --prefix-colors green,blue,magenta \"pnpm --filter @lead-intake/web dev\" \"PYTHONPATH=services/api uv run uvicorn lead_api.main:app --reload --host 127.0.0.1 --port 8000\" \"PYTHONPATH=services/api:services/worker uv run python -m lead_worker\"",
     "supabase:start": "supabase start",
     "supabase:reset": "supabase db reset",
     "supabase:stop": "supabase stop",
@@ -16,6 +16,7 @@
   },
   "devDependencies": {
     "concurrently": "9.1.2",
+    "dotenv-cli": "8.0.0",
     "supabase": "2.48.3"
   },
   "pnpm": {
