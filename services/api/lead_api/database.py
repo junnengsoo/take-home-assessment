@@ -5,6 +5,15 @@ import asyncpg
 from lead_api.config import Settings
 
 
+class SubmissionAttemptAlreadyExists(Exception):
+    def __init__(self, existing: asyncpg.Record) -> None:
+        self.existing = existing
+
+
+class LeadPersistenceError(Exception):
+    pass
+
+
 class Database:
     def __init__(self) -> None:
         self._pool: Optional[asyncpg.Pool] = None
@@ -41,6 +50,140 @@ class Database:
                 """,
                 attorney_id,
             )
+
+    async def fetch_submission_attempt(self, attempt_key: str) -> Optional[asyncpg.Record]:
+        if self._pool is None and self._settings is not None:
+            await self.connect(self._settings)
+        if self._pool is None:
+            raise RuntimeError("database pool is not initialized")
+        async with self._pool.acquire() as connection:
+            return await self._fetch_submission_attempt(connection, attempt_key)
+
+    async def create_lead_submission(
+        self,
+        *,
+        attempt_key: str,
+        request_fingerprint: str,
+        first_name: str,
+        last_name: str,
+        normalized_email: str,
+        storage_bucket: str,
+        storage_object_key: str,
+        original_filename: str,
+        content_type: str,
+        byte_size: int,
+        sha256_digest: str,
+    ) -> asyncpg.Record:
+        if self._pool is None and self._settings is not None:
+            await self.connect(self._settings)
+        if self._pool is None:
+            raise RuntimeError("database pool is not initialized")
+
+        async with self._pool.acquire() as connection:
+            try:
+                async with connection.transaction():
+                    lead_id = await connection.fetchval(
+                        """
+                        insert into app.leads (first_name, last_name, normalized_email)
+                        values ($1, $2, $3)
+                        returning id
+                        """,
+                        first_name,
+                        last_name,
+                        normalized_email,
+                    )
+                    await connection.execute(
+                        """
+                        insert into app.resume_metadata (
+                          lead_id,
+                          storage_bucket,
+                          storage_object_key,
+                          original_filename,
+                          content_type,
+                          byte_size,
+                          sha256_digest
+                        )
+                        values ($1, $2, $3, $4, $5, $6, $7)
+                        """,
+                        lead_id,
+                        storage_bucket,
+                        storage_object_key,
+                        original_filename,
+                        content_type,
+                        byte_size,
+                        sha256_digest,
+                    )
+                    await connection.execute(
+                        """
+                        insert into app.lead_status_changes (lead_id, status, actor_type)
+                        values ($1, 'PENDING', 'SYSTEM')
+                        """,
+                        lead_id,
+                    )
+                    await connection.execute(
+                        """
+                        insert into app.lead_audit_events (
+                          lead_id,
+                          event_type,
+                          actor_type,
+                          payload
+                        )
+                        values (
+                          $1,
+                          'lead.created',
+                          'SYSTEM',
+                          jsonb_build_object(
+                            'submissionAttemptKey', $2::text,
+                            'resumeSha256Digest', $3::text
+                          )
+                        )
+                        """,
+                        lead_id,
+                        attempt_key,
+                        sha256_digest,
+                    )
+                    await connection.execute(
+                        """
+                        insert into app.submission_attempts (
+                          attempt_key,
+                          request_fingerprint,
+                          lead_id
+                        )
+                        values ($1, $2, $3)
+                        """,
+                        attempt_key,
+                        request_fingerprint,
+                        lead_id,
+                    )
+            except asyncpg.UniqueViolationError as exc:
+                existing = await self._fetch_submission_attempt(connection, attempt_key)
+                if existing is not None:
+                    raise SubmissionAttemptAlreadyExists(existing) from exc
+                raise LeadPersistenceError from exc
+            except asyncpg.PostgresError as exc:
+                raise LeadPersistenceError from exc
+
+            created = await self._fetch_submission_attempt(connection, attempt_key)
+            if created is None:
+                raise LeadPersistenceError
+            return created
+
+    async def _fetch_submission_attempt(
+        self, connection: asyncpg.Connection, attempt_key: str
+    ) -> Optional[asyncpg.Record]:
+        return await connection.fetchrow(
+            """
+            select
+              sa.attempt_key,
+              sa.request_fingerprint,
+              sa.lead_id::text as lead_id,
+              l.version
+            from app.submission_attempts sa
+            join app.leads l on l.id = sa.lead_id
+            where sa.attempt_key = $1
+            """,
+            attempt_key,
+        )
 
     async def ready(self) -> bool:
         if self._pool is None and self._settings is not None:

@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from lead_api.auth import AttorneyIdentity, current_attorney
 from lead_api.config import get_settings
 from lead_api.database import database
+from lead_api.leads import submit_lead
 from lead_api.problems import ProblemError, problem, problem_error_handler
 
 CURRENT_ATTORNEY = Depends(current_attorney)
@@ -63,6 +64,8 @@ def create_app() -> FastAPI:
             "email": attorney.email,
             "displayName": attorney.display_name,
         }
+
+    app.post("/api/v1/leads", status_code=201)(submit_lead)
 
     return app
 
