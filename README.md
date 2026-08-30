@@ -35,7 +35,8 @@ local random value. The default Turnstile entries are Cloudflare's official
 local/automation test keys. `FALLBACK_INTAKE_ADDRESS` controls the internal
 notification recipient used when no Attorney account exists.
 
-Run Next.js, FastAPI, and the worker directly on the host with one root command:
+Run Next.js, FastAPI, and the email worker directly on the host with one root
+command:
 
 ```bash
 pnpm dev
@@ -93,7 +94,7 @@ the Lead creation transaction. If no Attorneys exist, the Lead remains
 unassigned and the configured Fallback Intake Address receives the internal
 notification.
 
-Lead creation also writes two durable `app.notification_outbox` records in the
+Lead creation also writes two durable `app.email_outbox` records in the
 same transaction: one Prospect confirmation to the submitted email and one
 internal notification to the assigned Attorney or fallback address. The
 internal payload is limited to Prospect name, email, and submission time;
@@ -105,6 +106,15 @@ request limit keyed by an HMAC of the selected network address, and managed
 Cloudflare Turnstile. Explicit Turnstile failures are rejected with retryable
 feedback; Cloudflare timeout, network failure, or service outage accepts the
 otherwise valid Lead with an internal `UNAVAILABLE` verification outcome.
+
+Notification email is delivered from `app.email_outbox` by the host-side Python
+worker. Local delivery uses Supabase CLI Mailpit SMTP at `127.0.0.1:54325`, and
+messages are inspectable in Mailpit at `http://127.0.0.1:54324`. The worker
+claims rows with PostgreSQL row locking, records provider identifiers and
+attempt counts on success, retries temporary failures with exponential delay,
+and retains terminal failures after five attempts. Delivery is at-least-once:
+a rare duplicate can occur after an ambiguous provider acknowledgement, but
+queued notifications should not be silently lost.
 
 If resume upload succeeds but database persistence fails, FastAPI attempts to
 delete the uploaded object before returning an error. If that compensating

@@ -66,7 +66,7 @@ async def reset_application_records() -> None:
     await execute_admin(
         """
         truncate
-          app.notification_outbox,
+          app.email_outbox,
           app.submission_attempts,
           app.lead_audit_events,
           app.lead_status_changes,
@@ -257,14 +257,13 @@ async def fetch_outbox(lead_id: str):
             """
             select
               id::text as id,
-              notification_type::text as notification_type,
+              kind::text as kind,
               recipient_email::text as recipient_email,
-              recipient_attorney_id::text as recipient_attorney_id,
               payload::text as payload,
               status
-            from app.notification_outbox
+            from app.email_outbox
             where lead_id = $1::uuid
-            order by notification_type
+            order by kind
             """,
             lead_id,
         )
@@ -395,20 +394,24 @@ def test_local_supabase_round_robin_assignment_and_notification_outbox() -> None
     outbox = asyncio.run(fetch_outbox(stored["lead_id"]))
     assert len(outbox) == 2
     assert len({row["id"] for row in outbox}) == 2
-    assert {row["notification_type"] for row in outbox} == {
+    assert {row["kind"] for row in outbox} == {
         "PROSPECT_CONFIRMATION",
-        "INTERNAL_LEAD_CREATED",
+        "INTERNAL_NEW_LEAD",
     }
 
-    prospect = next(row for row in outbox if row["notification_type"] == "PROSPECT_CONFIRMATION")
-    internal = next(row for row in outbox if row["notification_type"] == "INTERNAL_LEAD_CREATED")
+    prospect = next(row for row in outbox if row["kind"] == "PROSPECT_CONFIRMATION")
+    internal = next(row for row in outbox if row["kind"] == "INTERNAL_NEW_LEAD")
     assert prospect["recipient_email"] == "ada@example.com"
-    assert prospect["recipient_attorney_id"] is None
     assert internal["recipient_email"] == "alpha.attorney@example.test"
-    assert internal["recipient_attorney_id"] == first_attorney
-    assert set(internal["payload"]) == {"prospectName", "prospectEmail", "submittedAt"}
+    assert set(internal["payload"]) == {
+        "prospectName",
+        "prospectEmail",
+        "assignment",
+        "submittedAt",
+    }
     assert internal["payload"]["prospectName"] == "Ada Lovelace"
     assert internal["payload"]["prospectEmail"] == "ada@example.com"
+    assert internal["payload"]["assignment"] == "Alpha Attorney"
     serialized_outbox = json.dumps(outbox)
     assert "private-name.pdf" not in serialized_outbox
     assert "resumeSha256Digest" not in serialized_outbox
@@ -477,12 +480,15 @@ def test_local_supabase_no_attorney_uses_fallback_notification_recipient() -> No
         stored = asyncio.run(fetch_submission(attempt_key))
         assert stored["assigned_attorney_id"] is None
         outbox = asyncio.run(fetch_outbox(stored["lead_id"]))
-        internal = next(
-            row for row in outbox if row["notification_type"] == "INTERNAL_LEAD_CREATED"
-        )
+        internal = next(row for row in outbox if row["kind"] == "INTERNAL_NEW_LEAD")
         assert internal["recipient_email"] == "intake.local@example.test"
-        assert internal["recipient_attorney_id"] is None
-        assert set(internal["payload"]) == {"prospectName", "prospectEmail", "submittedAt"}
+        assert set(internal["payload"]) == {
+            "prospectName",
+            "prospectEmail",
+            "assignment",
+            "submittedAt",
+        }
+        assert internal["payload"]["assignment"] == "Unassigned"
     finally:
         asyncio.run(ensure_seeded_attorney())
 
@@ -502,10 +508,10 @@ def test_local_supabase_outbox_failure_rolls_back_and_compensates_resume(
             """
             create or replace function app.fail_internal_notification_for_test()
             returns trigger
-            language plpgsql
-            as $$
-            begin
-              if new.notification_type = 'INTERNAL_LEAD_CREATED' then
+              language plpgsql
+              as $$
+              begin
+              if new.kind = 'INTERNAL_NEW_LEAD' then
                 raise exception 'forced internal notification failure';
               end if;
               return new;
@@ -513,10 +519,10 @@ def test_local_supabase_outbox_failure_rolls_back_and_compensates_resume(
             $$;
 
             drop trigger if exists fail_internal_notification_for_test
-              on app.notification_outbox;
+              on app.email_outbox;
 
             create trigger fail_internal_notification_for_test
-              before insert on app.notification_outbox
+              before insert on app.email_outbox
               for each row execute function app.fail_internal_notification_for_test();
             """
         )
@@ -545,7 +551,7 @@ def test_local_supabase_outbox_failure_rolls_back_and_compensates_resume(
             execute_admin(
                 """
                 drop trigger if exists fail_internal_notification_for_test
-                  on app.notification_outbox;
+                  on app.email_outbox;
                 drop function if exists app.fail_internal_notification_for_test();
                 """
             )

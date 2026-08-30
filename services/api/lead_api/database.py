@@ -89,7 +89,7 @@ class Database:
                     )
                     assignment = await connection.fetchrow(
                         """
-                        select id, email::text as email
+                        select id, email::text as email, display_name
                         from app.attorneys
                         order by last_assigned_at asc nulls first, created_at asc, id asc
                         limit 1
@@ -99,6 +99,9 @@ class Database:
                     assigned_attorney_id = assignment["id"] if assignment is not None else None
                     internal_recipient = (
                         assignment["email"] if assignment is not None else fallback_intake_address
+                    )
+                    assignment_label = (
+                        assignment["display_name"] if assignment is not None else "Unassigned"
                     )
 
                     lead = await connection.fetchrow(
@@ -194,9 +197,9 @@ class Database:
                     )
                     await connection.execute(
                         """
-                        insert into app.notification_outbox (
+                        insert into app.email_outbox (
                           lead_id,
-                          notification_type,
+                          kind,
                           recipient_email,
                           payload
                         )
@@ -204,39 +207,42 @@ class Database:
                           $1,
                           'PROSPECT_CONFIRMATION',
                           $2,
-                          jsonb_build_object('submittedAt', $3::timestamptz)
+                          jsonb_build_object(
+                            'prospectFirstName', $3::text,
+                            'submittedAt', $4::timestamptz
+                          )
                         )
                         """,
                         lead_id,
                         normalized_email,
+                        first_name,
                         lead["created_at"],
                     )
                     await connection.execute(
                         """
-                        insert into app.notification_outbox (
+                        insert into app.email_outbox (
                           lead_id,
-                          notification_type,
+                          kind,
                           recipient_email,
-                          recipient_attorney_id,
                           payload
                         )
                         values (
                           $1,
-                          'INTERNAL_LEAD_CREATED',
+                          'INTERNAL_NEW_LEAD',
                           $2,
-                          $3,
                           jsonb_build_object(
-                            'prospectName', $4::text,
-                            'prospectEmail', $5::text,
+                            'prospectName', $3::text,
+                            'prospectEmail', $4::text,
+                            'assignment', $5::text,
                             'submittedAt', $6::timestamptz
                           )
                         )
                         """,
                         lead_id,
                         internal_recipient,
-                        assigned_attorney_id,
                         f"{first_name} {last_name}",
                         normalized_email,
+                        assignment_label,
                         lead["created_at"],
                     )
             except asyncpg.UniqueViolationError as exc:

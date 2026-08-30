@@ -76,6 +76,7 @@ async def test_readiness_reports_database_dependency(monkeypatch: pytest.MonkeyP
     get_settings.cache_clear()
     monkeypatch.setenv("SUPABASE_ANON_KEY", "test-anon-key")
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "test-service-role-key")
+    monkeypatch.setenv("FALLBACK_INTAKE_ADDRESS", "intake.local@example.test")
 
     async def ready() -> bool:
         return False

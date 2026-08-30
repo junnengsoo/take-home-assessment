@@ -93,6 +93,10 @@ def allow_abuse_controls(monkeypatch: pytest.MonkeyPatch) -> None:
     async def pass_turnstile(*args, **kwargs):
         return TurnstileOutcome.SUCCESS
 
+    monkeypatch.setattr(
+        "lead_api.leads.get_settings",
+        lambda: Settings(fallback_intake_address="intake.local@example.test"),
+    )
     monkeypatch.setattr("lead_api.leads.database.consume_public_lead_rate_limit", allow_rate_limit)
     monkeypatch.setattr("lead_api.leads.verify_turnstile", pass_turnstile)
 
@@ -262,7 +266,10 @@ def test_trusted_proxy_forwarded_address_changes_rate_limit_key(
 
     monkeypatch.setattr(
         "lead_api.leads.get_settings",
-        lambda: Settings(trusted_proxy_addresses=["198.51.100.10"]),
+        lambda: Settings(
+            fallback_intake_address="intake.local@example.test",
+            trusted_proxy_addresses=["198.51.100.10"],
+        ),
     )
     monkeypatch.setattr(
         "lead_api.leads.database.consume_public_lead_rate_limit", capture_rate_limit
