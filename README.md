@@ -1,7 +1,40 @@
-# Take-home assessment
+# Lead Intake take-home assessment
 
-A focused workspace for a software engineering take-home assessment designed to
-fit within approximately six hours.
+Production-shaped Lead intake and Attorney follow-up application built with
+Next.js, FastAPI, Supabase, and a PostgreSQL-backed email worker.
+
+## Reviewer quick path
+
+1. Read the architecture: [docs/system-design.md](docs/system-design.md).
+2. Follow the local setup: [docs/local-development.md](docs/local-development.md).
+3. Start Supabase and reset the seeded demo data:
+
+   ```bash
+   pnpm exec supabase start
+   pnpm exec supabase db reset
+   ```
+
+4. Start the app:
+
+   ```bash
+   pnpm dev
+   ```
+
+5. Open the main demo surfaces:
+
+   - Public form: http://localhost:3000
+   - Attorney sign-in: http://localhost:3000/sign-in
+   - FastAPI docs: http://127.0.0.1:8000/docs
+   - Supabase Studio: http://127.0.0.1:54323
+   - Mailpit: http://127.0.0.1:54324
+
+6. Sign in with the seeded Attorney account:
+
+   - Email: `attorney.local@example.test`
+   - Password: `LocalAttorney123!`
+
+7. Before final submission, use
+   [docs/release-checklist.md](docs/release-checklist.md).
 
 ## Local platform
 
@@ -88,6 +121,10 @@ Seeded Attorney login:
 - Email: `attorney.local@example.test`
 - Password: `LocalAttorney123!`
 
+`supabase/seed.sql` also creates additional safe mock Attorneys and
+representative Leads/status histories so the workspace is meaningful
+immediately after `pnpm exec supabase db reset`.
+
 Supabase Auth public signup is disabled locally. Email/password sign-in stays
 enabled so administratively created Attorneys can sign in. Additional Attorney
 accounts are created in Supabase Studio; the database trigger creates an
@@ -108,6 +145,18 @@ seeded Supabase sign-in path and protected FastAPI identity lookup:
 ```bash
 pnpm test:local-supabase
 ```
+
+Run the desktop browser journey after Supabase is started/reset and `.env.local`
+is configured:
+
+```bash
+pnpm test:e2e
+```
+
+The E2E journey submits a Lead, verifies Mailpit messages, signs in as the
+seeded Attorney, opens Lead Detail, previews/downloads the résumé, marks the
+Lead `REACHED_OUT`, reverses it to `PENDING`, and verifies persistence after
+refresh.
 
 ## Scope notes
 

@@ -259,6 +259,7 @@ class RecordingConnection:
         return [
             {
                 "id": "10000000-0000-4000-8000-000000000001",
+                "lead_id": "33333333-3333-4333-8333-333333333333",
                 "kind": "PROSPECT_CONFIRMATION",
                 "recipient_email": "ada@example.com",
                 "payload": {"prospectFirstName": "Ada"},

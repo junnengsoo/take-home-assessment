@@ -1,4 +1,6 @@
+import logging
 from contextlib import asynccontextmanager
+from time import perf_counter
 from typing import Optional
 from uuid import uuid4
 
@@ -30,10 +32,12 @@ from lead_api.lead_queue import (
 )
 from lead_api.lead_status import LeadStatusMutation
 from lead_api.leads import submit_lead
+from lead_api.observability import configure_logging
 from lead_api.problems import ProblemError, problem, problem_error_handler
 from lead_api.storage import resume_storage
 
 CURRENT_ATTORNEY = Depends(current_attorney)
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -48,6 +52,7 @@ async def lifespan(_: FastAPI):
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    configure_logging(service="api", environment=settings.app_env)
     app = FastAPI(title="Lead Intake API", version="0.1.0", lifespan=lifespan)
     app.add_exception_handler(ProblemError, problem_error_handler)
     app.add_middleware(
@@ -58,6 +63,43 @@ def create_app() -> FastAPI:
         allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
         expose_headers=["Content-Disposition", "X-Request-ID"],
     )
+
+    @app.middleware("http")
+    async def correlate_and_log_requests(request: Request, call_next):
+        correlation_id = request.headers.get("x-request-id") or str(uuid4())
+        request.state.correlation_id = correlation_id
+        started = perf_counter()
+        try:
+            response = await call_next(request)
+        except Exception:
+            route_template = _route_template(request)
+            logger.exception(
+                "api_request_failed",
+                extra={
+                    "correlation_id": correlation_id,
+                    "route_template": route_template,
+                    "method": request.method,
+                    "latency_ms": _latency_ms(started),
+                    "actor_attorney_id": getattr(request.state, "actor_attorney_id", None),
+                    "lead_id": _lead_id(request),
+                },
+            )
+            raise
+
+        response.headers.setdefault("X-Request-ID", correlation_id)
+        logger.info(
+            "api_request_completed",
+            extra={
+                "correlation_id": correlation_id,
+                "route_template": _route_template(request),
+                "method": request.method,
+                "status": response.status_code,
+                "latency_ms": _latency_ms(started),
+                "actor_attorney_id": getattr(request.state, "actor_attorney_id", None),
+                "lead_id": _lead_id(request),
+            },
+        )
+        return response
 
     @app.get("/health/live")
     async def live() -> dict[str, str]:
@@ -150,7 +192,7 @@ def create_app() -> FastAPI:
         attorney: AttorneyIdentity = CURRENT_ATTORNEY,
     ) -> dict[str, object]:
         parsed_lead_id = parse_lead_id(lead_id)
-        correlation_id = request.headers.get("x-request-id") or str(uuid4())
+        correlation_id = getattr(request.state, "correlation_id", None) or str(uuid4())
         try:
             row = await database.update_lead_status(
                 lead_id=parsed_lead_id,
@@ -173,6 +215,15 @@ def create_app() -> FastAPI:
                 "No Lead was found for the authenticated Attorney.",
                 "lead_not_found",
             )
+        logger.info(
+            "lead_status_changed",
+            extra={
+                "correlation_id": correlation_id,
+                "lead_id": parsed_lead_id,
+                "actor_attorney_id": attorney.id,
+                "status": mutation.status,
+            },
+        )
         return lead_detail_payload(row)
 
     @app.get("/api/v1/admin/leads/{lead_id}/resume")
@@ -194,11 +245,21 @@ def create_app() -> FastAPI:
             )
 
         content = await resume_storage.download(get_settings(), row["storage_object_key"])
-        correlation_id = request.headers.get("x-request-id") or str(uuid4())
+        correlation_id = getattr(request.state, "correlation_id", None) or str(uuid4())
         await database.append_resume_download_audit_event(
             lead_id=parsed_lead_id,
             actor_attorney_id=attorney.id,
             correlation_id=correlation_id,
+        )
+        logger.info(
+            "resume_streamed",
+            extra={
+                "correlation_id": correlation_id,
+                "lead_id": parsed_lead_id,
+                "actor_attorney_id": attorney.id,
+                "resume_disposition": parsed_disposition,
+                "content_type": row["content_type"],
+            },
         )
 
         return StreamingResponse(
@@ -218,6 +279,21 @@ def create_app() -> FastAPI:
     app.post("/api/v1/leads", status_code=201)(submit_lead)
 
     return app
+
+
+def _latency_ms(started: float) -> int:
+    return round((perf_counter() - started) * 1000)
+
+
+def _route_template(request: Request) -> str:
+    route = request.scope.get("route")
+    path = getattr(route, "path", None)
+    return path if isinstance(path, str) else "unmatched"
+
+
+def _lead_id(request: Request) -> str | None:
+    value = request.path_params.get("lead_id")
+    return value if isinstance(value, str) else None
 
 
 app = create_app()

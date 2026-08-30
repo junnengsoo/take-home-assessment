@@ -77,12 +77,20 @@ This root command starts:
 - FastAPI at `http://127.0.0.1:8000`
 - the Python email worker on the host process
 
-## Seeded Attorney
+## Seeded demo data
 
-Use the seeded account after `pnpm exec supabase db reset`:
+Use the primary seeded account after `pnpm exec supabase db reset`:
 
 - Email: `attorney.local@example.test`
 - Password: `LocalAttorney123!`
+
+The reset also creates safe mock Attorney accounts and representative Leads
+with `PENDING`, `REACHED_OUT`, and reversed history states. These records use
+`example.test` addresses and synthetic résumé metadata so the workspace has
+meaningful queue data immediately. SQL seed data does not upload real local
+Storage bytes for those synthetic résumé objects; the private résumé byte path
+is exercised by submitting a fresh Lead through the public form or by running
+the desktop E2E journey.
 
 Public signup is disabled. Create additional Attorney accounts through
 Supabase Studio at `http://127.0.0.1:54323`. Every administratively created
@@ -189,3 +197,56 @@ Prospect and one `INTERNAL_NEW_LEAD` row addressed to the assigned Attorney, or
 to the Fallback Intake Address when no Assignment exists. The worker consumes
 the queued recipient and template payload; it does not perform Assignment or
 recipient selection itself.
+
+## Observability
+
+FastAPI and the worker emit structured JSON application logs. Each log record
+includes timestamp, severity, service, environment, event, and correlation
+identity, plus operation-specific fields such as route template, HTTP status,
+latency, Actor, Lead, notification kind, and provider.
+
+The app deliberately does not log bearer tokens, request bodies, Prospect names
+or emails, original résumé filenames, résumé content, or raw network addresses.
+Representative redaction behavior is covered by automated tests.
+
+## Test commands
+
+Run the host-side unit/source checks:
+
+```bash
+pnpm test
+```
+
+After Supabase is started and reset, run the local Supabase integration checks:
+
+```bash
+pnpm test:local-supabase
+```
+
+Run the desktop Playwright journey:
+
+```bash
+pnpm test:e2e
+```
+
+The Playwright journey assumes Supabase has been started/reset and `.env.local`
+contains the current JWT-style local keys from `pnpm exec supabase status
+--output env`. It reuses an existing `pnpm dev` server if one is already
+running; otherwise Playwright starts the root dev command.
+
+## Common troubleshooting
+
+- **Port 8000 already in use**: stop the other FastAPI/dev process, then rerun
+  `pnpm dev`.
+- **`turnstile_verification_failed` locally**: when using Cloudflare test keys,
+  set `TURNSTILE_EXPECTED_ACTION=` and `TURNSTILE_ALLOWED_HOSTNAMES=example.com`
+  in `.env.local`, then restart `pnpm dev`.
+- **`resume_upload_failed` locally**: confirm `.env.local` uses `ANON_KEY` and
+  `SERVICE_ROLE_KEY` from `pnpm exec supabase status --output env`, not the
+  newer `sb_publishable_...` / `sb_secret_...` values from normal status output.
+- **No email in Mailpit**: confirm the worker is running through `pnpm dev`,
+  `EMAIL_PROVIDER=local-smtp`, `EMAIL_SMTP_HOST=127.0.0.1`, and
+  `EMAIL_SMTP_PORT=54325`.
+- **Readiness fails**: `GET /health/ready` depends on required configuration
+  and PostgreSQL connectivity. Storage or email issues are surfaced only on the
+  specific operation that needs them.

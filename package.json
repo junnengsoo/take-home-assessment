@@ -12,6 +12,7 @@
     "supabase:stop": "supabase stop",
     "test": "pnpm --filter @lead-intake/web lint && pnpm --filter @lead-intake/web test && uv run pytest",
     "test:api": "uv run pytest services/api/tests",
+    "test:e2e": "pnpm --filter @lead-intake/web test:e2e",
     "test:local-supabase": "RUN_LOCAL_SUPABASE_TESTS=1 uv run pytest services/api/tests/integration"
   },
   "devDependencies": {

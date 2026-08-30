@@ -14,7 +14,7 @@ pytestmark = pytest.mark.skipif(
 
 def local_supabase_settings() -> tuple[str, str]:
     settings = get_settings()
-    assert settings.supabase_anon_key, "set SUPABASE_ANON_KEY to the local publishable key"
+    assert settings.supabase_anon_key, "set SUPABASE_ANON_KEY to the local anon JWT key"
     return str(settings.supabase_url).rstrip("/"), settings.supabase_anon_key
 
 
