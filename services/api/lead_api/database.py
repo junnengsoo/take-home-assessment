@@ -3,6 +3,7 @@ from typing import Optional
 import asyncpg
 
 from lead_api.config import Settings
+from lead_api.lead_queue import LeadCursor
 
 
 class SubmissionAttemptAlreadyExists(Exception):
@@ -50,6 +51,110 @@ class Database:
                 """,
                 attorney_id,
             )
+
+    async def list_attorneys(self) -> list[asyncpg.Record]:
+        if self._pool is None and self._settings is not None:
+            await self.connect(self._settings)
+        if self._pool is None:
+            raise RuntimeError("database pool is not initialized")
+        async with self._pool.acquire() as connection:
+            return await connection.fetch(
+                """
+                select id::text as id, email::text as email, display_name
+                from app.attorneys
+                order by display_name asc, email asc, id asc
+                """
+            )
+
+    async def lead_queue_counts(self, *, current_attorney_id: str) -> dict[str, int]:
+        if self._pool is None and self._settings is not None:
+            await self.connect(self._settings)
+        if self._pool is None:
+            raise RuntimeError("database pool is not initialized")
+        async with self._pool.acquire() as connection:
+            row = await connection.fetchrow(
+                """
+                select
+                  count(*) filter (where assigned_attorney_id = $1::uuid)::int as my,
+                  count(*) filter (where assigned_attorney_id is null)::int as unassigned,
+                  count(*)::int as all
+                from app.leads
+                """,
+                current_attorney_id,
+            )
+            return {"my": row["my"], "unassigned": row["unassigned"], "all": row["all"]}
+
+    async def list_leads(
+        self,
+        *,
+        current_attorney_id: str,
+        scope: str,
+        status: Optional[str],
+        assignment: Optional[str],
+        search_email: Optional[str],
+        cursor: Optional[LeadCursor],
+        page_size: int,
+    ) -> list[asyncpg.Record]:
+        if self._pool is None and self._settings is not None:
+            await self.connect(self._settings)
+        if self._pool is None:
+            raise RuntimeError("database pool is not initialized")
+
+        conditions = ["true"]
+        args: list[object] = []
+
+        def add_arg(value: object) -> str:
+            args.append(value)
+            return f"${len(args)}"
+
+        if scope == "my":
+            conditions.append(f"l.assigned_attorney_id = {add_arg(current_attorney_id)}::uuid")
+        elif scope == "unassigned":
+            conditions.append("l.assigned_attorney_id is null")
+
+        if status is not None:
+            conditions.append(f"l.current_status = {add_arg(status)}::app.lead_status")
+
+        if assignment == "me":
+            conditions.append(f"l.assigned_attorney_id = {add_arg(current_attorney_id)}::uuid")
+        elif assignment == "unassigned":
+            conditions.append("l.assigned_attorney_id is null")
+        elif assignment is not None:
+            conditions.append(f"l.assigned_attorney_id = {add_arg(assignment)}::uuid")
+
+        if search_email is not None:
+            conditions.append(f"l.normalized_email = {add_arg(search_email)}")
+
+        if cursor is not None:
+            created_at_arg = add_arg(cursor.created_at)
+            lead_id_arg = add_arg(cursor.lead_id)
+            conditions.append(
+                f"(l.created_at, l.id) < ({created_at_arg}::timestamptz, "
+                f"{lead_id_arg}::uuid)"
+            )
+
+        limit_arg = add_arg(page_size + 1)
+        where_sql = " and ".join(conditions)
+        query = f"""
+            select
+              l.id::text as id,
+              l.first_name,
+              l.last_name,
+              l.normalized_email::text as normalized_email,
+              l.current_status::text as current_status,
+              l.version,
+              l.created_at,
+              a.id::text as assigned_attorney_id,
+              a.email::text as assigned_attorney_email,
+              a.display_name as assigned_attorney_display_name
+            from app.leads l
+            left join app.attorneys a on a.id = l.assigned_attorney_id
+            where {where_sql}
+            order by l.created_at desc, l.id desc
+            limit {limit_arg}
+        """
+        async with self._pool.acquire() as connection:
+            return await connection.fetch(query, *args)
 
     async def fetch_submission_attempt(self, attempt_key: str) -> Optional[asyncpg.Record]:
         if self._pool is None and self._settings is not None:

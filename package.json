@@ -10,7 +10,7 @@
     "supabase:start": "supabase start",
     "supabase:reset": "supabase db reset",
     "supabase:stop": "supabase stop",
-    "test": "pnpm --filter @lead-intake/web lint && uv run pytest",
+    "test": "pnpm --filter @lead-intake/web lint && pnpm --filter @lead-intake/web test && uv run pytest",
     "test:api": "uv run pytest services/api/tests",
     "test:local-supabase": "RUN_LOCAL_SUPABASE_TESTS=1 uv run pytest services/api/tests/integration"
   },
