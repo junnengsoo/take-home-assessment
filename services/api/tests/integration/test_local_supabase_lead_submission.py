@@ -6,6 +6,7 @@ import asyncpg
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from lead_api.abuse import TurnstileOutcome
 from lead_api.config import get_settings
 from lead_api.database import LeadPersistenceError
 from lead_api.main import app
@@ -26,6 +27,8 @@ def form_data(attempt_key: str, email: str = "ada@example.com") -> dict[str, str
         "lastName": "Lovelace",
         "email": email,
         "submissionAttemptKey": attempt_key,
+        "turnstileToken": "integration-turnstile-token",
+        "website": "",
     }
 
 
@@ -51,6 +54,7 @@ async def fetch_submission(attempt_key: str):
               r.content_type,
               r.byte_size,
               r.sha256_digest,
+              l.turnstile_verification_outcome::text as turnstile_verification_outcome,
               (
                 select count(*) from app.lead_status_changes sc
                 where sc.lead_id = l.id
@@ -97,6 +101,14 @@ def service_storage_response(object_key: str) -> int:
     return response.status_code
 
 
+@pytest.fixture(autouse=True)
+def pass_turnstile(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def verify(*args, **kwargs):
+        return TurnstileOutcome.SUCCESS
+
+    monkeypatch.setattr("lead_api.leads.verify_turnstile", verify)
+
+
 def test_local_supabase_lead_submission_persists_private_resume() -> None:
     if not get_settings().supabase_service_role_key:
         pytest.skip("set SUPABASE_SERVICE_ROLE_KEY to the local service role key")
@@ -124,6 +136,7 @@ def test_local_supabase_lead_submission_persists_private_resume() -> None:
     assert stored["storage_object_key"].endswith(".pdf")
     assert stored["content_type"] == "application/pdf"
     assert stored["byte_size"] == len(pdf_bytes())
+    assert stored["turnstile_verification_outcome"] == "SUCCESS"
     assert stored["pending_status_changes"] == 1
     assert stored["creation_audit_events"] == 1
     assert public_storage_response(stored["storage_object_key"]) != 200

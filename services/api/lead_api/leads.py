@@ -9,8 +9,16 @@ from io import BytesIO
 from pathlib import PurePath
 from typing import Optional
 
-from fastapi import File, Form, Response, UploadFile
+from fastapi import File, Form, Request, Response, UploadFile
 
+from lead_api.abuse import (
+    TurnstileExplicitFailure,
+    TurnstileOutcome,
+    TurnstileUnavailable,
+    address_hmac,
+    client_address,
+    verify_turnstile,
+)
 from lead_api.config import get_settings
 from lead_api.database import LeadPersistenceError, SubmissionAttemptAlreadyExists, database
 from lead_api.problems import ProblemError
@@ -29,6 +37,8 @@ FIRST_NAME_FORM = Form(default=None, alias="firstName")
 LAST_NAME_FORM = Form(default=None, alias="lastName")
 EMAIL_FORM = Form(default=None)
 SUBMISSION_ATTEMPT_KEY_FORM = Form(default=None, alias="submissionAttemptKey")
+TURNSTILE_TOKEN_FORM = Form(default=None, alias="turnstileToken")
+HONEYPOT_FORM = Form(default="", alias="website")
 RESUME_FILE = File(default=None)
 
 
@@ -187,17 +197,22 @@ def request_fingerprint(
 
 
 async def submit_lead(
+    request: Request,
     response: Response,
     first_name: Optional[str] = FIRST_NAME_FORM,
     last_name: Optional[str] = LAST_NAME_FORM,
     email: Optional[str] = EMAIL_FORM,
     submission_attempt_key: Optional[str] = SUBMISSION_ATTEMPT_KEY_FORM,
+    turnstile_token: Optional[str] = TURNSTILE_TOKEN_FORM,
+    honeypot: str = HONEYPOT_FORM,
     resume: Optional[UploadFile] = RESUME_FILE,
 ) -> dict[str, object]:
+    settings = get_settings()
     clean_first_name = normalize_name(first_name, "First name")
     clean_last_name = normalize_name(last_name, "Last name")
     normalized_email = normalize_email(email)
     attempt_key = normalize_attempt_key(submission_attempt_key)
+    reject_honeypot(honeypot)
     validated_resume = await validate_resume(resume)
     fingerprint = request_fingerprint(
         first_name=clean_first_name,
@@ -213,7 +228,18 @@ async def submit_lead(
         response.status_code = 200
         return lead_confirmation(existing)
 
-    settings = get_settings()
+    remote_address = client_address(
+        request.headers,
+        request.client.host if request.client else None,
+        settings.trusted_proxy_addresses,
+    )
+    await enforce_public_lead_rate_limit(settings, remote_address)
+    turnstile_outcome = await verify_turnstile_for_submission(
+        token=turnstile_token,
+        remote_address=remote_address,
+        settings=settings,
+    )
+
     object_key = f"{uuid.uuid4()}{validated_resume.extension}"
     stored_resume = await resume_storage.upload(
         settings,
@@ -235,6 +261,7 @@ async def submit_lead(
             content_type=validated_resume.content_type,
             byte_size=len(validated_resume.content),
             sha256_digest=validated_resume.sha256_digest,
+            turnstile_verification_outcome=turnstile_outcome.value,
         )
     except SubmissionAttemptAlreadyExists as exc:
         await compensate_resume_upload(settings, stored_resume.object_key)
@@ -254,6 +281,61 @@ async def submit_lead(
         raise
 
     return lead_confirmation(lead)
+
+
+def reject_honeypot(value: str) -> None:
+    if value.strip():
+        raise ProblemError(
+            400,
+            "Submission could not be accepted",
+            "Refresh the page and try submitting again.",
+            "honeypot_triggered",
+        )
+
+
+async def enforce_public_lead_rate_limit(settings, remote_address: str) -> None:
+    if not settings.public_lead_rate_limit_enabled:
+        return
+
+    allowed = await database.consume_public_lead_rate_limit(
+        address_key=address_hmac(remote_address, settings.public_lead_rate_limit_hmac_secret),
+        max_requests=settings.public_lead_rate_limit_max_requests,
+        window_seconds=settings.public_lead_rate_limit_window_seconds,
+    )
+    if not allowed:
+        raise ProblemError(
+            429,
+            "Too many submissions",
+            "Please wait a moment before submitting again.",
+            "public_lead_rate_limited",
+        )
+
+
+async def verify_turnstile_for_submission(
+    *,
+    token: Optional[str],
+    remote_address: str,
+    settings,
+) -> TurnstileOutcome:
+    try:
+        return await verify_turnstile(token, remote_address, settings)
+    except TurnstileExplicitFailure as exc:
+        logger.info(
+            "turnstile_verification_failed",
+            extra={"turnstile_error_codes": exc.error_codes},
+        )
+        raise ProblemError(
+            400,
+            "Verification failed",
+            "The verification check failed. Please try again.",
+            "turnstile_verification_failed",
+        ) from exc
+    except TurnstileUnavailable as exc:
+        logger.warning(
+            "turnstile_verification_unavailable",
+            extra={"turnstile_unavailable_reason": str(exc)},
+        )
+        return TurnstileOutcome.UNAVAILABLE
 
 
 async def compensate_resume_upload(settings, object_key: str) -> None:

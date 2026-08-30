@@ -73,6 +73,7 @@ class Database:
         content_type: str,
         byte_size: int,
         sha256_digest: str,
+        turnstile_verification_outcome: str,
     ) -> asyncpg.Record:
         if self._pool is None and self._settings is not None:
             await self.connect(self._settings)
@@ -84,13 +85,19 @@ class Database:
                 async with connection.transaction():
                     lead_id = await connection.fetchval(
                         """
-                        insert into app.leads (first_name, last_name, normalized_email)
-                        values ($1, $2, $3)
+                        insert into app.leads (
+                          first_name,
+                          last_name,
+                          normalized_email,
+                          turnstile_verification_outcome
+                        )
+                        values ($1, $2, $3, $4)
                         returning id
                         """,
                         first_name,
                         last_name,
                         normalized_email,
+                        turnstile_verification_outcome,
                     )
                     await connection.execute(
                         """
@@ -167,6 +174,49 @@ class Database:
             if created is None:
                 raise LeadPersistenceError
             return created
+
+    async def consume_public_lead_rate_limit(
+        self,
+        *,
+        address_key: str,
+        max_requests: int,
+        window_seconds: int,
+    ) -> bool:
+        if self._pool is None and self._settings is not None:
+            await self.connect(self._settings)
+        if self._pool is None:
+            raise RuntimeError("database pool is not initialized")
+
+        async with self._pool.acquire() as connection:
+            request_count = await connection.fetchval(
+                """
+                insert into app.public_lead_rate_limits (
+                  address_key,
+                  window_start,
+                  request_count
+                )
+                values ($1, now(), 1)
+                on conflict (address_key) do update
+                set
+                  window_start = case
+                    when app.public_lead_rate_limits.window_start
+                      <= now() - ($3 * interval '1 second')
+                    then now()
+                    else app.public_lead_rate_limits.window_start
+                  end,
+                  request_count = case
+                    when app.public_lead_rate_limits.window_start
+                      <= now() - ($3 * interval '1 second')
+                    then 1
+                    else app.public_lead_rate_limits.request_count + 1
+                  end
+                returning request_count <= $2
+                """,
+                address_key,
+                max_requests,
+                window_seconds,
+            )
+            return bool(request_count)
 
     async def _fetch_submission_attempt(
         self, connection: asyncpg.Connection, attempt_key: str
