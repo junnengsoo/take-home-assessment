@@ -36,12 +36,12 @@ export default function LeadDetailPage() {
   const leadId = params.leadId;
   const [lead, setLead] = useState<LeadDetail | null>(null);
   const [token, setToken] = useState("");
-  const [resumePreviewUrl, setResumePreviewUrl] = useState("");
+  const [resumePreviewReady, setResumePreviewReady] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [previewError, setPreviewError] = useState("");
   const [downloadError, setDownloadError] = useState("");
-  const resumePreviewUrlRef = useRef("");
+  const resumePreviewContainerRef = useRef<HTMLDivElement | null>(null);
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 
@@ -50,6 +50,7 @@ export default function LeadDetailPage() {
       if (!nextLead.resume.previewable) {
         return;
       }
+      setResumePreviewReady(false);
       const response = await fetch(
         `${apiUrl}/api/v1/admin/leads/${leadId}/resume?disposition=inline`,
         {
@@ -69,16 +70,66 @@ export default function LeadDetailPage() {
         }
         return;
       }
-      const blob = await response.blob();
+      const arrayBuffer = await response.arrayBuffer();
       if (!isActive()) {
         return;
       }
-      const objectUrl = URL.createObjectURL(blob);
-      if (resumePreviewUrlRef.current) {
-        URL.revokeObjectURL(resumePreviewUrlRef.current);
+
+      const container = resumePreviewContainerRef.current;
+      if (!container) {
+        if (isActive()) {
+          setPreviewError("The résumé preview could not be prepared. Download remains available.");
+        }
+        return;
       }
-      resumePreviewUrlRef.current = objectUrl;
-      setResumePreviewUrl(objectUrl);
+
+      try {
+        const pdfjs = await import("pdfjs-dist");
+        pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+          "pdfjs-dist/build/pdf.worker.mjs",
+          import.meta.url
+        ).toString();
+
+        const loadingTask = pdfjs.getDocument({ data: new Uint8Array(arrayBuffer) });
+        const pdf = await loadingTask.promise;
+        const availableWidth = Math.max(320, container.clientWidth || 720) - 32;
+        const pixelRatio = window.devicePixelRatio || 1;
+
+        container.replaceChildren();
+
+        for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+          const page = await pdf.getPage(pageNumber);
+          const unscaledViewport = page.getViewport({ scale: 1 });
+          const scale = Math.min(1.6, Math.max(0.8, availableWidth / unscaledViewport.width));
+          const viewport = page.getViewport({ scale });
+          const canvas = document.createElement("canvas");
+          const context = canvas.getContext("2d");
+          if (!context) {
+            throw new Error("canvas_context_unavailable");
+          }
+
+          canvas.width = Math.floor(viewport.width * pixelRatio);
+          canvas.height = Math.floor(viewport.height * pixelRatio);
+          canvas.style.width = `${Math.floor(viewport.width)}px`;
+          canvas.style.height = `${Math.floor(viewport.height)}px`;
+          canvas.setAttribute("aria-label", `Resume preview page ${pageNumber}`);
+
+          context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+          context.clearRect(0, 0, viewport.width, viewport.height);
+          await page.render({ canvasContext: context, viewport }).promise;
+          container.append(canvas);
+        }
+        await pdf.destroy();
+
+        if (isActive()) {
+          setResumePreviewReady(true);
+        }
+      } catch {
+        resumePreviewContainerRef.current?.replaceChildren();
+        if (isActive()) {
+          setPreviewError("The résumé preview could not be rendered. Download remains available.");
+        }
+      }
     },
     [apiUrl, leadId, router]
   );
@@ -91,6 +142,7 @@ export default function LeadDetailPage() {
       setError("");
       setPreviewError("");
       setDownloadError("");
+      setResumePreviewReady(false);
 
       const supabase = createClient();
       const { data } = await supabase.auth.getSession();
@@ -122,7 +174,6 @@ export default function LeadDetailPage() {
         setLead(body);
         setToken(nextToken);
         setLoading(false);
-        await loadPreview(nextToken, body, () => active);
       }
     }
 
@@ -135,12 +186,23 @@ export default function LeadDetailPage() {
 
     return () => {
       active = false;
-      if (resumePreviewUrlRef.current) {
-        URL.revokeObjectURL(resumePreviewUrlRef.current);
-        resumePreviewUrlRef.current = "";
-      }
     };
-  }, [apiUrl, leadId, loadPreview, router]);
+  }, [apiUrl, leadId, router]);
+
+  useEffect(() => {
+    if (!lead || !token) {
+      return;
+    }
+    let active = true;
+    loadPreview(token, lead, () => active).catch(() => {
+      if (active) {
+        setPreviewError("The résumé preview could not be rendered. Download remains available.");
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [lead, loadPreview, token]);
 
   async function downloadResume() {
     if (!lead || !token) {
@@ -260,16 +322,25 @@ export default function LeadDetailPage() {
 
                   {downloadError ? <p className="field-error">{downloadError}</p> : null}
 
-                  {lead.resume.previewable && resumePreviewUrl ? (
-                    <iframe
-                      className="resume-preview-frame"
-                      src={resumePreviewUrl}
-                      title="Resume preview"
-                    />
+                  {lead.resume.previewable ? (
+                    <div className="resume-preview-frame">
+                      {!resumePreviewReady && !previewError ? (
+                        <div className="resume-preview-loading">Rendering secure preview...</div>
+                      ) : null}
+                      {previewError ? (
+                        <div className="resume-preview-fallback">{previewError}</div>
+                      ) : (
+                        <div
+                          ref={resumePreviewContainerRef}
+                          className="resume-preview-pages"
+                          aria-label="Resume preview pages"
+                        />
+                      )}
+                    </div>
                   ) : (
                     <div className="resume-preview-fallback">
-                      {previewError ||
-                        "This résumé type cannot be previewed safely in the browser. Use download instead."}
+                      This résumé type cannot be previewed safely in the browser. Use download
+                      instead.
                     </div>
                   )}
                 </div>

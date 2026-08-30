@@ -56,6 +56,7 @@ def create_app() -> FastAPI:
         allow_credentials=False,
         allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
+        expose_headers=["Content-Disposition", "X-Request-ID"],
     )
 
     @app.get("/health/live")
