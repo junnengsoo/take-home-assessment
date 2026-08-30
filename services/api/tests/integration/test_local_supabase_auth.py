@@ -3,12 +3,19 @@ import os
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from lead_api.config import get_settings
 from lead_api.main import app
 
 pytestmark = pytest.mark.skipif(
     os.getenv("RUN_LOCAL_SUPABASE_TESTS") != "1",
     reason="set RUN_LOCAL_SUPABASE_TESTS=1 after starting and resetting local Supabase",
 )
+
+
+def local_supabase_settings() -> tuple[str, str]:
+    settings = get_settings()
+    assert settings.supabase_anon_key, "set SUPABASE_ANON_KEY to the local publishable key"
+    return str(settings.supabase_url).rstrip("/"), settings.supabase_anon_key
 
 
 def test_health_endpoints_report_local_supabase_readiness() -> None:
@@ -23,8 +30,7 @@ def test_health_endpoints_report_local_supabase_readiness() -> None:
 
 
 def test_seeded_attorney_can_sign_in_and_fastapi_resolves_identity() -> None:
-    supabase_url = os.environ["SUPABASE_URL"].rstrip("/")
-    anon_key = os.environ["SUPABASE_ANON_KEY"]
+    supabase_url, anon_key = local_supabase_settings()
 
     auth_response = httpx.post(
         f"{supabase_url}/auth/v1/token?grant_type=password",
@@ -40,7 +46,7 @@ def test_seeded_attorney_can_sign_in_and_fastapi_resolves_identity() -> None:
 
     with TestClient(app) as client:
         response = client.get(
-            "/api/v1/admin/me",
+            "/api/v1/attorneys/me",
             headers={"Authorization": f"Bearer {access_token}"},
         )
 
@@ -53,8 +59,7 @@ def test_seeded_attorney_can_sign_in_and_fastapi_resolves_identity() -> None:
 
 
 def test_public_attorney_signup_is_disabled() -> None:
-    supabase_url = os.environ["SUPABASE_URL"].rstrip("/")
-    anon_key = os.environ["SUPABASE_ANON_KEY"]
+    supabase_url, anon_key = local_supabase_settings()
 
     response = httpx.post(
         f"{supabase_url}/auth/v1/signup",
@@ -85,7 +90,7 @@ def test_public_attorney_signup_is_disabled() -> None:
 def test_invalid_local_supabase_credentials_are_rejected(token: str, expected_code: str) -> None:
     with TestClient(app) as client:
         response = client.get(
-            "/api/v1/admin/me",
+            "/api/v1/attorneys/me",
             headers={"Authorization": f"Bearer {token}"},
         )
 
@@ -95,8 +100,7 @@ def test_invalid_local_supabase_credentials_are_rejected(token: str, expected_co
 
 
 def test_browser_facing_supabase_api_cannot_read_private_attorneys_table() -> None:
-    supabase_url = os.environ["SUPABASE_URL"].rstrip("/")
-    anon_key = os.environ["SUPABASE_ANON_KEY"]
+    supabase_url, anon_key = local_supabase_settings()
 
     response = httpx.get(
         f"{supabase_url}/rest/v1/attorneys",

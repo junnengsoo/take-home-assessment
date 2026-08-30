@@ -56,7 +56,7 @@ def create_app() -> FastAPI:
             )
         return {"status": "ready"}
 
-    @app.get("/api/v1/admin/me")
+    @app.get("/api/v1/attorneys/me")
     async def me(attorney: AttorneyIdentity = CURRENT_ATTORNEY) -> dict[str, str]:
         return {
             "id": attorney.id,

@@ -17,7 +17,7 @@ def test_liveness_reports_process_running() -> None:
 
 def test_protected_identity_requires_bearer_header() -> None:
     with TestClient(app) as client:
-        response = client.get("/api/v1/admin/me")
+        response = client.get("/api/v1/attorneys/me")
 
     assert response.status_code == 401
     assert response.headers["content-type"].startswith("application/problem+json")
@@ -35,14 +35,14 @@ def test_malformed_authorization_is_rejected() -> None:
 def test_cors_allows_configured_frontend_origin_only() -> None:
     with TestClient(app) as client:
         allowed = client.options(
-            "/api/v1/admin/me",
+            "/api/v1/attorneys/me",
             headers={
                 "Origin": "http://localhost:3000",
                 "Access-Control-Request-Method": "GET",
             },
         )
         blocked = client.options(
-            "/api/v1/admin/me",
+            "/api/v1/attorneys/me",
             headers={
                 "Origin": "http://evil.example",
                 "Access-Control-Request-Method": "GET",
