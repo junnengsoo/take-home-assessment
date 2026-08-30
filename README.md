@@ -26,14 +26,47 @@ pnpm exec supabase start
 pnpm exec supabase db reset
 ```
 
-Then copy `.env.example` to `.env.local` and replace `SUPABASE_ANON_KEY` and
-`NEXT_PUBLIC_SUPABASE_ANON_KEY` with the local publishable key printed by
-`pnpm exec supabase status`. Replace `SUPABASE_SERVICE_ROLE_KEY` with the local
-service role key from the same status output; it is used only by FastAPI to
-write private resume objects. Set `PUBLIC_LEAD_RATE_LIMIT_HMAC_SECRET` to a
-local random value. The default Turnstile entries are Cloudflare's official
-local/automation test keys. `FALLBACK_INTAKE_ADDRESS` controls the internal
-notification recipient used when no Attorney account exists.
+`pnpm exec supabase status` prints the local service URLs that reviewers use:
+
+- Supabase API: `http://127.0.0.1:54321`
+- Database: `postgresql://postgres:postgres@127.0.0.1:54322/postgres`
+- Studio: `http://127.0.0.1:54323`
+- Mailpit: `http://127.0.0.1:54324`
+- S3-compatible Storage: `http://127.0.0.1:54321/storage/v1/s3`
+
+The normal status output may also print newer `Publishable key` and `Secret
+key` values. Do not put those `sb_...` values into this application's current
+`SUPABASE_ANON_KEY`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, or
+`SUPABASE_SERVICE_ROLE_KEY` settings. This code path expects the local JWT-style
+keys. Get those with:
+
+```bash
+pnpm exec supabase status --output env
+```
+
+Then copy `.env.example` to `.env.local` and use:
+
+- `ANON_KEY` for `SUPABASE_ANON_KEY`
+- `ANON_KEY` for `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `SERVICE_ROLE_KEY` for `SUPABASE_SERVICE_ROLE_KEY`
+
+`SUPABASE_SERVICE_ROLE_KEY` is used only by FastAPI to write private resume
+objects. Set `PUBLIC_LEAD_RATE_LIMIT_HMAC_SECRET` to a local random value.
+`FALLBACK_INTAKE_ADDRESS` controls the internal notification recipient used when
+no Attorney account exists.
+
+For local manual smoke testing, Turnstile is only a demo anti-abuse integration.
+Use Cloudflare's official test keys. If Siteverify returns the dummy success
+payload, set these local `.env.local` values so the demo does not reject the
+static dummy response:
+
+```env
+TURNSTILE_EXPECTED_ACTION=
+TURNSTILE_ALLOWED_HOSTNAMES=example.com
+```
+
+Hosted production must use real Turnstile keys with strict action and hostname
+checks.
 
 Run Next.js, FastAPI, and the email worker directly on the host with one root
 command:

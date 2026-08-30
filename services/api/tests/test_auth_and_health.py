@@ -53,6 +53,27 @@ def test_cors_allows_configured_frontend_origin_only() -> None:
     assert "access-control-allow-origin" not in blocked.headers
 
 
+def test_cors_allows_resume_correlation_header_and_exposes_download_headers() -> None:
+    with TestClient(app) as client:
+        preflight = client.options(
+            "/api/v1/admin/leads/00000000-0000-0000-0000-000000000000/resume?disposition=inline",
+            headers={
+                "Origin": "http://localhost:3000",
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "authorization,x-request-id",
+            },
+        )
+        actual = client.get(
+            "/api/v1/admin/leads/00000000-0000-0000-0000-000000000000/resume?disposition=inline",
+            headers={"Origin": "http://localhost:3000"},
+        )
+
+    assert preflight.status_code == 200
+    assert "X-Request-ID" in preflight.headers["access-control-allow-headers"]
+    assert "Content-Disposition" in actual.headers["access-control-expose-headers"]
+    assert "X-Request-ID" in actual.headers["access-control-expose-headers"]
+
+
 @pytest.mark.asyncio
 async def test_readiness_reports_missing_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
     get_settings.cache_clear()

@@ -21,9 +21,12 @@ test("detail page fetches private resume bytes through authenticated FastAPI rou
   assert.ok(detail.includes("Authorization: `Bearer ${token}`"));
   assert.match(detail, /disposition=inline/);
   assert.match(detail, /disposition=attachment/);
+  assert.match(detail, /pdfjs-dist/);
+  assert.match(detail, /getDocument/);
+  assert.match(detail, /canvas/);
   assert.ok(detail.includes("URL.createObjectURL"));
   assert.ok(detail.includes("URL.revokeObjectURL"));
-  assert.match(detail, /resumePreviewUrl/);
+  assert.match(detail, /resumePreviewReady/);
   assert.doesNotMatch(detail, /createSignedUrl/);
   assert.equal(detail.includes("storage/v1/object/public"), false);
 });
